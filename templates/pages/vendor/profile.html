@@ -1750,12 +1750,12 @@
                 }
 
                 if (uploadAllBtn) {
-                    uploadAllBtn.disabled = true;
                     uploadAllBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status"></span> Saving Documents...';
+                    setTimeout(function() { uploadAllBtn.disabled = true; }, 0);
                 }
                 if (bodySaveKycBtn) {
-                    bodySaveKycBtn.disabled = true;
                     bodySaveKycBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status"></span> Saving...';
+                    setTimeout(function() { bodySaveKycBtn.disabled = true; }, 0);
                 }
             });
         }
@@ -1833,27 +1833,16 @@
                 if (!isValid) {
                     e.preventDefault();
                     e.stopPropagation();
+                    delete profileForm.dataset.submitting;
+                    const saveBtn = document.getElementById("saveVendorProfileBtn") || profileForm.querySelector('button[type="submit"]');
+                    if (saveBtn && window.resetButtonLoading) {
+                        window.resetButtonLoading(saveBtn);
+                    }
                     if (firstInvalidEl) {
                         firstInvalidEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
                         firstInvalidEl.focus();
                     }
                     return false;
-                }
-
-                // Prevent duplicate submissions while saving
-                if (profileForm.dataset.submitting === "true") {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    return false;
-                }
-                profileForm.dataset.submitting = "true";
-
-                const saveBtn = document.getElementById("saveVendorProfileBtn") || profileForm.querySelector('button[type="submit"]');
-                if (saveBtn) {
-                    saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span> Saving Changes...';
-                    setTimeout(function() {
-                        saveBtn.disabled = true;
-                    }, 0);
                 }
             });
 
@@ -1861,9 +1850,11 @@
             const editProfileModalEl = document.getElementById("editProfileModal");
             if (editProfileModalEl) {
                 editProfileModalEl.addEventListener("hidden.bs.modal", function() {
-                    profileForm.dataset.submitting = "false";
+                    delete profileForm.dataset.submitting;
                     const saveBtn = document.getElementById("saveVendorProfileBtn") || profileForm.querySelector('button[type="submit"]');
-                    if (saveBtn) {
+                    if (saveBtn && window.resetButtonLoading) {
+                        window.resetButtonLoading(saveBtn);
+                    } else if (saveBtn) {
                         saveBtn.disabled = false;
                         saveBtn.innerHTML = '<i class="fa-solid fa-check me-1"></i> Save Changes';
                     }
