@@ -236,6 +236,7 @@ class TestBrowserNavigationAndSignoutGuard:
         assert "lastBackClickTime" in app_js
         assert "ps360_user_signed_out" in app_js
         assert "/login/?reason=signed_out" in app_js
+        assert "/api/v1/auth/session-exit/" in app_js
 
     def test_security_headers_middleware_sets_anti_cache_headers_for_authenticated_users(self, client):
         """Authenticated GET responses receive strict anti-cache headers to prevent bfcache retention on forward navigation."""
@@ -283,6 +284,44 @@ class TestBrowserNavigationAndSignoutGuard:
         assert "ps360_tab_session_id" in timeout_js
         assert "/login/?reason=another_tab" in timeout_js
         assert "idleTimeoutSeconds = 300" in timeout_js or "idleTimeoutSeconds" in timeout_js
+
+    def test_session_exit_beacon_terminates_session_and_sets_cookies(self, client):
+        """POST /api/v1/auth/session-exit/ terminates active user session and sets anti-cache guard cookies."""
+        role, _ = Role.objects.get_or_create(code=Role.SUPER_ADMIN, defaults={"name": "Super Admin"})
+        user = User.objects.create_user(
+            email="session_exit_test@procuresphere.com",
+            password="Password123!",
+            role=role,
+        )
+        client.force_login(user)
+        assert "_auth_user_id" in client.session
+
+        resp = client.post("/api/v1/auth/session-exit/")
+        assert resp.status_code == 200
+        assert "_auth_user_id" not in client.session
+        assert resp.cookies.get("ps360_user_signed_out").value == "1"
+        assert resp.cookies.get("ps360_just_logged_out").value == "1"
+
+    def test_forward_navigation_to_dashboard_with_signed_out_cookie_redirects_to_login(self, client):
+        """Forward navigation (Right arrow) from Chrome homepage to dashboard with signed_out cookie redirects to login."""
+        role, _ = Role.objects.get_or_create(code=Role.SUPER_ADMIN, defaults={"name": "Super Admin"})
+        user = User.objects.create_user(
+            email="forward_arrow_test@procuresphere.com",
+            password="Password123!",
+            role=role,
+        )
+        client.force_login(user)
+        assert "_auth_user_id" in client.session
+
+        # Simulate user having exited to Chrome homepage where ps360_user_signed_out cookie was set
+        client.cookies["ps360_user_signed_out"] = "1"
+
+        # User clicks Right (Forward) arrow from Chrome homepage back to dashboard
+        resp = client.get("/superadmin/")
+        assert resp.status_code == 302
+        assert resp.url == "/login/?reason=signed_out"
+        # Session is strictly invalidated
+        assert "_auth_user_id" not in client.session
 
     def test_all_10_dashboards_contain_signout_guard_modal(self, client):
         """All 10 enterprise role dashboard roots render signout confirmation modal and guard scripts."""

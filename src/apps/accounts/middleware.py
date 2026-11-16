@@ -40,6 +40,7 @@ TIMEOUT_EXEMPT_PREFIXES = (
     "/api/v1/auth/login/",
     "/api/v1/auth/token/",
     "/api/v1/auth/logout/",
+    "/api/v1/auth/session-exit/",
 )
 PASSIVE_POLL_PATHS = (
     "/notifications/htmx/feed/",
@@ -83,6 +84,14 @@ class SessionIdleTimeoutMiddleware:
         user = getattr(request, "user", None)
         if user is None or not user.is_authenticated:
             return self.get_response(request)
+
+        # Check if user backed out / exited to Chrome homepage: terminate session on forward navigation
+        if request.COOKIES.get("ps360_user_signed_out") == "1" or request.COOKIES.get("ps360_just_logged_out") == "1":
+            logout(request)
+            response = redirect("/login/?reason=signed_out")
+            response.delete_cookie("ps360_user_signed_out")
+            response.set_cookie("ps360_just_logged_out", "1", max_age=60, path="/", samesite="Lax")
+            return response
 
         path = request.path or "/"
         if path in TIMEOUT_EXEMPT_PATHS or path.startswith(TIMEOUT_EXEMPT_PREFIXES):

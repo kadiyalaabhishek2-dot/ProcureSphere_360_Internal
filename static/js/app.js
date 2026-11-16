@@ -529,6 +529,15 @@ document.addEventListener('DOMContentLoaded', function () {
             localStorage.removeItem('ps360_idle_expired_at_ms');
         } catch (e) {}
 
+        // Send background beacon to immediately terminate session on server
+        try {
+            if (navigator.sendBeacon) {
+                navigator.sendBeacon('/api/v1/auth/session-exit/');
+            } else {
+                fetch('/api/v1/auth/session-exit/', { method: 'POST', credentials: 'same-origin', keepalive: true });
+            }
+        } catch (bErr) {}
+
         // Broadcast to all open tabs so they auto-logout immediately
         if (window.BroadcastChannel) {
             try {
