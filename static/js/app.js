@@ -515,8 +515,7 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     });
 
-    function performSignout(redirectUrl) {
-        redirectUrl = redirectUrl || '/login/?reason=signed_out';
+    function markUserSignedOut() {
         try {
             sessionStorage.setItem('ps360_user_signed_out', 'true');
             localStorage.setItem('ps360_user_signed_out', String(Date.now()));
@@ -530,11 +529,14 @@ document.addEventListener('DOMContentLoaded', function () {
             localStorage.removeItem('ps360_idle_expired_at_ms');
         } catch (e) {}
 
-        const csrfToken = getCookie('csrftoken');
-        const headers = { 'X-Requested-With': 'XMLHttpRequest' };
-        if (csrfToken) {
-            headers['X-CSRFToken'] = csrfToken;
-        }
+        // Send background beacon to immediately terminate session on server
+        try {
+            if (navigator.sendBeacon) {
+                navigator.sendBeacon('/api/v1/auth/session-exit/');
+            } else {
+                fetch('/api/v1/auth/session-exit/', { method: 'POST', credentials: 'same-origin', keepalive: true });
+            }
+        } catch (bErr) {}
 
         // Broadcast to all open tabs so they auto-logout immediately
         if (window.BroadcastChannel) {
@@ -544,22 +546,53 @@ document.addEventListener('DOMContentLoaded', function () {
                 bc.close();
             } catch (bcErr) {}
         }
+    }
+    window.PSMarkSignedOut = markUserSignedOut;
 
-        // Send POST to /logout/ and API session logout with keepalive
+    function performSignout(redirectUrl) {
+        redirectUrl = redirectUrl || '/login/?reason=signed_out';
+        markUserSignedOut();
+
+        // 1. If modal form exists, submit it natively with CSRF protection
+        const modalForm = document.getElementById('signout-confirm-form');
+        if (modalForm) {
+            try {
+                modalForm.submit();
+                return;
+            } catch (subErr) {}
+        }
+
+        // 2. If global navbar logout form exists, submit it
+        const navForm = document.getElementById('globalNavbarLogoutForm');
+        if (navForm) {
+            try {
+                navForm.submit();
+                return;
+            } catch (navErr) {}
+        }
+
+        // 3. Fallback: dynamically submit POST form with CSRF token
         try {
-            fetch('/logout/', {
-                method: 'POST',
-                credentials: 'same-origin',
-                headers: headers,
-                keepalive: true
-            });
-            fetch('/api/v1/auth/logout/', {
-                method: 'POST',
-                credentials: 'same-origin',
-                headers: headers,
-                keepalive: true
-            });
-        } catch (fErr) {}
+            const form = document.createElement('form');
+            form.method = 'POST';
+            form.action = '/logout/';
+            const csrfToken = getCookie('csrftoken');
+            if (csrfToken) {
+                const csrfInput = document.createElement('input');
+                csrfInput.type = 'hidden';
+                csrfInput.name = 'csrfmiddlewaretoken';
+                csrfInput.value = csrfToken;
+                form.appendChild(csrfInput);
+            }
+            const reasonInput = document.createElement('input');
+            reasonInput.type = 'hidden';
+            reasonInput.name = 'reason';
+            reasonInput.value = 'signed_out';
+            form.appendChild(reasonInput);
+            document.body.appendChild(form);
+            form.submit();
+            return;
+        } catch (dynErr) {}
 
         window.location.replace(redirectUrl);
     }
@@ -567,14 +600,26 @@ document.addEventListener('DOMContentLoaded', function () {
 
     // Intercept logout links & forms to trigger session termination and redirect directly to login
     document.addEventListener('submit', function (e) {
-        if (e.target && (e.target.id === 'signout-confirm-form' || e.target.getAttribute('action') === '/logout/')) {
-            e.preventDefault();
-            performSignout();
+        if (e.target && (e.target.id === 'signout-confirm-form' || e.target.id === 'globalNavbarLogoutForm' || e.target.getAttribute('action') === '/logout/')) {
+            markUserSignedOut();
+            // Allow native form POST to process directly with CSRF token
         }
     });
 
     document.addEventListener('click', function (e) {
-        const logoutLink = e.target.closest('a[href="/logout/"], a[href^="/logout"], #signout-confirm-action-btn');
+        const modalBtn = e.target.closest('#signout-confirm-action-btn');
+        if (modalBtn) {
+            markUserSignedOut();
+            const form = modalBtn.closest('form') || document.getElementById('signout-confirm-form');
+            if (form) {
+                form.submit();
+            } else {
+                performSignout('/login/?reason=signed_out');
+            }
+            return;
+        }
+
+        const logoutLink = e.target.closest('a[href="/logout/"], a[href^="/logout"]');
         if (logoutLink) {
             e.preventDefault();
             performSignout();

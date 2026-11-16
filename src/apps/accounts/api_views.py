@@ -1,9 +1,11 @@
 import time
 
 from django.contrib.auth import authenticate, login, logout
+from django.http import JsonResponse
 from django.middleware.csrf import get_token
 from django.utils.decorators import method_decorator
-from django.views.decorators.csrf import ensure_csrf_cookie
+from django.views import View
+from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
 from drf_spectacular.utils import OpenApiExample, OpenApiResponse, extend_schema
 from rest_framework import filters, mixins, status, views, viewsets
 from rest_framework.decorators import action
@@ -267,6 +269,40 @@ class SessionLogoutView(views.APIView):
 
         logout(request)
         return Response({"message": "Logout successful."}, status=status.HTTP_200_OK)
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class SessionExitBeaconView(View):
+    """
+    Receives beacon when user exits the web application to the browser homepage
+    via browser back navigation. Terminates the server session immediately.
+    """
+
+    def post(self, request, *args, **kwargs):
+        user = getattr(request, "user", None)
+        if user is not None and user.is_authenticated:
+            try:
+                from apps.audit.models import AuditLog
+                from apps.audit.services import create_audit_log_service
+
+                create_audit_log_service(
+                    actor=user,
+                    action=AuditLog.ACTION_LOGOUT,
+                    target_model="User",
+                    target_object_id=str(user.id),
+                    previous_state={"email": user.email},
+                    new_state={"reason": "browser_exit_to_home"},
+                    ip_address=request.META.get("REMOTE_ADDR"),
+                    user_agent=request.META.get("HTTP_USER_AGENT", ""),
+                )
+            except Exception:
+                pass
+            logout(request)
+
+        response = JsonResponse({"status": "ok", "message": "Session terminated on exit."})
+        response.set_cookie("ps360_just_logged_out", "1", max_age=120, path="/", samesite="Lax")
+        response.set_cookie("ps360_user_signed_out", "1", max_age=120, path="/", samesite="Lax")
+        return response
 
 
 class SessionRefreshView(views.APIView):
