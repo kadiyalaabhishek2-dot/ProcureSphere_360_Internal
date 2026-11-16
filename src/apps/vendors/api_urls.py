@@ -33,7 +33,7 @@ from apps.vendors.permissions import (
     VendorAccessPermission,
     can_view_governance,
 )
-from apps.vendors.selectors import get_vendor_change_history
+from apps.vendors.selectors import get_vendor_change_history, scope_vendors_queryset
 from apps.vendors.services import (
     allowed_governance_transitions,
     approve_vendor_service,
@@ -490,6 +490,7 @@ class VendorViewSet(viewsets.ModelViewSet):
                 "purchase_orders",
             )
         )
+        base_qs = scope_vendors_queryset(base_qs, user)
         qs = annotate_governance(base_qs)
 
         # Vendor user scoping: external vendor users only see their own vendor record
@@ -500,15 +501,6 @@ class VendorViewSet(viewsets.ModelViewSet):
                 qs = qs.filter(id=user.vendor.id)
             else:
                 return qs.none()
-        elif not user.is_superuser and not can_view_governance(user):
-            scoped_org = getattr(user, "effective_organization", None)
-            if scoped_org:
-                qs = qs.filter(
-                    Q(organization=scoped_org)
-                    | Q(organization__isnull=True)
-                    | Q(created_by__organization=scoped_org)
-                    | Q(created_by__department__organization=scoped_org)
-                )
 
         filterset = VendorFilter(self.request.query_params, queryset=qs)
         if not filterset.is_valid():
@@ -876,11 +868,13 @@ class VendorCategoryViewSet(viewsets.ModelViewSet):
         )
         if search_param:
             from django.db.models import Q
-            qs = qs.filter(
-                Q(name__icontains=search_param)
-                | Q(code__icontains=search_param)
-                | Q(description__icontains=search_param)
-            )
+            terms = search_param.split()
+            for term in terms:
+                qs = qs.filter(
+                    Q(name__icontains=term)
+                    | Q(code__icontains=term)
+                    | Q(description__icontains=term)
+                )
         return qs
 
 
