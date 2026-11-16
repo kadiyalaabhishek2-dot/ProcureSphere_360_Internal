@@ -518,7 +518,12 @@ document.addEventListener('DOMContentLoaded', function () {
     function performSignout(redirectUrl) {
         redirectUrl = redirectUrl || '/login/?reason=signed_out';
         try {
-            sessionStorage.clear();
+            sessionStorage.setItem('ps360_user_signed_out', 'true');
+            localStorage.setItem('ps360_user_signed_out', String(Date.now()));
+            document.cookie = "ps360_just_logged_out=1; path=/; max-age=120; SameSite=Lax";
+            document.cookie = "ps360_user_signed_out=1; path=/; max-age=120; SameSite=Lax";
+            sessionStorage.removeItem('ps_portal_initialized');
+            sessionStorage.removeItem('ps360_tab_session_id');
             localStorage.removeItem('ps360_active_session_id');
             localStorage.removeItem('ps360_active_session_time');
             localStorage.removeItem('ps360_idle_last_activity_ms');
@@ -531,15 +536,32 @@ document.addEventListener('DOMContentLoaded', function () {
             headers['X-CSRFToken'] = csrfToken;
         }
 
-        fetch('/logout/', {
-            method: 'POST',
-            credentials: 'same-origin',
-            headers: headers
-        }).catch(function () {
-            // Ignore error and proceed directly to target redirect
-        }).finally(function () {
-            window.location.href = redirectUrl;
-        });
+        // Broadcast to all open tabs so they auto-logout immediately
+        if (window.BroadcastChannel) {
+            try {
+                const bc = new BroadcastChannel('ps360_session_channel');
+                bc.postMessage({ type: 'SIGN_OUT', timestamp: Date.now() });
+                bc.close();
+            } catch (bcErr) {}
+        }
+
+        // Send POST to /logout/ and API session logout with keepalive
+        try {
+            fetch('/logout/', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: headers,
+                keepalive: true
+            });
+            fetch('/api/v1/auth/logout/', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: headers,
+                keepalive: true
+            });
+        } catch (fErr) {}
+
+        window.location.replace(redirectUrl);
     }
     window.PSPerformSignout = performSignout;
 
@@ -559,11 +581,24 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     });
 
-    // Restore buttons on page show (e.g. back/forward navigation or browser cache)
+    // Enforce anti-cache and bfcache protection on back/forward navigation
     window.addEventListener('pageshow', function (event) {
+        // 1. If user signed out, NEVER display dashboard: redirect immediately to login!
+        try {
+            if (sessionStorage.getItem('ps360_user_signed_out') === 'true' ||
+                localStorage.getItem('ps360_user_signed_out') ||
+                document.cookie.includes('ps360_user_signed_out=1')) {
+                window.location.replace('/login/?reason=signed_out');
+                return;
+            }
+        } catch (e) {}
+
+        // 2. If restored from bfcache, force fresh server reload
         if (event.persisted) {
             window.location.reload();
+            return;
         }
+
         document.querySelectorAll('form[data-submitting="true"]').forEach(function (form) {
             delete form.dataset.submitting;
             const buttons = form.querySelectorAll('.btn-loading');
@@ -635,6 +670,7 @@ document.addEventListener('DOMContentLoaded', function () {
         } catch (e) {}
 
         let signoutTimerInterval = null;
+        let lastBackClickTime = 0;
 
         function clearSignoutTimer() {
             if (signoutTimerInterval) {
@@ -688,7 +724,19 @@ document.addEventListener('DOMContentLoaded', function () {
 
                 // Stop timer if closed by user clicking "Stay on Dashboard" or "Sign Out"
                 modalEl.removeEventListener('hidden.bs.modal', clearSignoutTimer);
-                modalEl.addEventListener('hidden.bs.modal', clearSignoutTimer, { once: true });
+                modalEl.addEventListener('hidden.bs.modal', function () {
+                    clearSignoutTimer();
+                    modalEl.removeAttribute('data-ps-active');
+                    lastBackClickTime = 0;
+                }, { once: true });
+
+                const stayBtn = document.getElementById('stay-signed-in-btn');
+                if (stayBtn) {
+                    stayBtn.addEventListener('click', function () {
+                        if (modalEl) modalEl.removeAttribute('data-ps-active');
+                        lastBackClickTime = 0;
+                    });
+                }
             } else if (window.PSConfirm) {
                 window.PSConfirm({
                     title: 'Sign Out Confirmation',
@@ -736,6 +784,14 @@ document.addEventListener('DOMContentLoaded', function () {
         // Re-arm when shown via browser navigation on dashboard root
         window.addEventListener('pageshow', function () {
             if (isDashboardRoot(window.location.pathname)) {
+                try {
+                    if (sessionStorage.getItem('ps360_user_signed_out') === 'true' ||
+                        localStorage.getItem('ps360_user_signed_out') ||
+                        document.cookie.includes('ps360_user_signed_out=1')) {
+                        window.location.replace('/login/?reason=signed_out');
+                        return;
+                    }
+                } catch (e) {}
                 armDashboardGuard();
             }
         });
@@ -854,12 +910,20 @@ document.addEventListener('DOMContentLoaded', function () {
                 }
 
                 // Case 5: User is on the Dashboard Root and clicks Back (or double clicks / clicks repeatedly)
-                const modalEl = document.getElementById('signout-confirm-modal');
-                const isModalOpen = modalEl && (modalEl.classList.contains('show') || modalEl.style.display === 'block');
+                const now = Date.now();
+                const timeDiff = now - lastBackClickTime;
+                lastBackClickTime = now;
 
-                if (isModalOpen) {
-                    // Modal was ALREADY open and user clicked Back again -> User explicitly insists on exiting!
-                    // Execute POST /logout/ immediately to cleanly terminate session and redirect to /login/?reason=signed_out
+                const modalEl = document.getElementById('signout-confirm-modal');
+                const isModalOpen = modalEl && (
+                    modalEl.classList.contains('show') ||
+                    modalEl.style.display === 'block' ||
+                    modalEl.getAttribute('data-ps-active') === 'true'
+                );
+
+                if ((timeDiff > 0 && timeDiff < 1500) || isModalOpen) {
+                    // Double-click detected (within 1.5 seconds) OR modal was already triggered!
+                    // User explicitly insists on exiting -> auto sign out immediately!
                     performSignout('/login/?reason=signed_out');
                     return;
                 }
@@ -872,6 +936,10 @@ document.addEventListener('DOMContentLoaded', function () {
                         window.location.href
                     );
                 } catch (err) {}
+
+                if (modalEl) {
+                    modalEl.setAttribute('data-ps-active', 'true');
+                }
 
                 // Trigger the sign-out confirmation toggle modal
                 showSignoutModal();

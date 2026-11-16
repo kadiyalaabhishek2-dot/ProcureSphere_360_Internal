@@ -317,6 +317,20 @@ class SessionKeepAliveView(views.APIView):
         },
         tags=["Authentication"],
     )
+    def get(self, request, *args, **kwargs):
+        if not request.user or not request.user.is_authenticated:
+            return Response(
+                {
+                    "error": {
+                        "code": "SESSION_EXPIRED",
+                        "message": "Your session has expired. Please sign in again.",
+                    },
+                    "redirect_url": "/login/?session_expired=1",
+                },
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+        return Response({"status": "authenticated"}, status=status.HTTP_200_OK)
+
     def post(self, request, *args, **kwargs):
         if not request.user or not request.user.is_authenticated:
             return Response(

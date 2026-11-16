@@ -145,6 +145,12 @@ class SecurityHeadersMiddleware:
             if "sessionid" in response.cookies:
                 response.cookies["sessionid"]["secure"] = True
 
+        # Prevent browser back/forward cache (bfcache) from restoring sensitive authenticated dashboards
+        if hasattr(request, "user") and request.user.is_authenticated and not request.path.startswith("/static/"):
+            response["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
+            response["Pragma"] = "no-cache"
+            response["Expires"] = "0"
+
         # Prevent DEBUG mode information leakage on 404 responses (DEF-006)
         if response.status_code == 404 and not request.path.startswith("/api/"):
             content = getattr(response, "content", b"")
