@@ -390,7 +390,7 @@ def test_def_010_manager_approval_action_unlocked(qa_setup):
     res = client.post(
         "/api/v1/manager/approvals/action/",
         data={
-            "item_type": "PR",
+            "item_type": "PO",
             "item_id": "00000000-0000-0000-0000-000000000000",
             "action": "APPROVE",
             "comments": "Testing manager approval action",
