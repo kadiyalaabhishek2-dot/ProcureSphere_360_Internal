@@ -323,6 +323,34 @@ class TestBrowserNavigationAndSignoutGuard:
         # Session is strictly invalidated
         assert "_auth_user_id" not in client.session
 
+    def test_forward_navigation_unauthenticated_with_signed_out_cookie_redirects_to_login(self, client):
+        """Even if beacon already terminated session, forward arrow with cookie redirects to login with reason."""
+        client.cookies["ps360_user_signed_out"] = "1"
+        resp = client.get("/superadmin/")
+        assert resp.status_code == 302
+        assert resp.url == "/login/?reason=signed_out"
+
+    def test_login_page_renders_signed_out_notice_when_cookie_present(self, client):
+        """GET /login/ with ps360_user_signed_out cookie renders signed out notice and clears cookie."""
+        client.cookies["ps360_user_signed_out"] = "1"
+        resp = client.get("/login/")
+        assert resp.status_code == 200
+        content = resp.content.decode("utf-8")
+        assert "You have been signed out of your session." in content
+        # Cookie is deleted
+        assert resp.cookies.get("ps360_user_signed_out").value == ""
+
+    def test_app_js_contains_pagehide_and_rearm_dashboard_guard(self):
+        """Verify static/js/app.js implements pagehide exit detection and rearmDashboardGuard."""
+        with open("static/js/app.js", "r", encoding="utf-8") as f:
+            app_js = f.read()
+
+        assert "pagehide" in app_js
+        assert "beforeunload" in app_js
+        assert "rearmDashboardGuard" in app_js
+        assert "dismissSignoutModal" in app_js
+        assert "handleDashboardExit" in app_js
+
     def test_all_10_dashboards_contain_signout_guard_modal(self, client):
         """All 10 enterprise role dashboard roots render signout confirmation modal and guard scripts."""
         dashboard_endpoints = [

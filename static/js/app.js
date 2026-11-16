@@ -716,11 +716,84 @@ document.addEventListener('DOMContentLoaded', function () {
 
         let signoutTimerInterval = null;
         let lastBackClickTime = 0;
+        let isInternalNavigation = false;
+
+        // Track internal page navigation to distinguish from exiting to browser homepage
+        document.addEventListener('click', function (e) {
+            const link = e.target.closest('a');
+            if (link && link.href) {
+                try {
+                    const url = new URL(link.href, window.location.origin);
+                    if (url.origin === window.location.origin && !link.getAttribute('href').startsWith('#')) {
+                        isInternalNavigation = true;
+                        setTimeout(function () { isInternalNavigation = false; }, 4000);
+                    }
+                } catch (err) {}
+            }
+        }, true);
+
+        document.addEventListener('submit', function () {
+            isInternalNavigation = true;
+            setTimeout(function () { isInternalNavigation = false; }, 4000);
+        }, true);
+
+        document.addEventListener('htmx:configRequest', function () {
+            isInternalNavigation = true;
+            setTimeout(function () { isInternalNavigation = false; }, 4000);
+        });
+
+        // When user backs out or exits from dashboard root to browser homepage (e.g. Chrome newtab), auto-signout
+        function handleDashboardExit() {
+            if (isDashboardRoot(window.location.pathname) && !isInternalNavigation) {
+                markUserSignedOut();
+            }
+        }
+        window.addEventListener('pagehide', handleDashboardExit);
+        window.addEventListener('beforeunload', handleDashboardExit);
 
         function clearSignoutTimer() {
             if (signoutTimerInterval) {
                 clearInterval(signoutTimerInterval);
                 signoutTimerInterval = null;
+            }
+        }
+
+        function rearmDashboardGuard() {
+            if (!window.history || !window.history.pushState) return;
+            const currentPath = window.location.pathname;
+            if (!isDashboardRoot(currentPath)) return;
+            try {
+                window.history.pushState(
+                    { ps_portal: true, isPsGuard: true, isInitialEntry: true, rootPath: currentPath, ts: Date.now() },
+                    document.title,
+                    window.location.href
+                );
+            } catch (e) {}
+        }
+
+        function dismissSignoutModal(rearm) {
+            clearSignoutTimer();
+            const modalEl = document.getElementById('signout-confirm-modal');
+            if (modalEl) {
+                modalEl.removeAttribute('data-ps-active');
+                if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
+                    const modalInstance = bootstrap.Modal.getInstance(modalEl);
+                    if (modalInstance) {
+                        try { modalInstance.hide(); } catch (err) {}
+                    }
+                }
+                modalEl.classList.remove('show');
+                modalEl.style.display = 'none';
+                document.querySelectorAll('.modal-backdrop').forEach(function (bd) {
+                    bd.remove();
+                });
+                document.body.classList.remove('modal-open');
+                document.body.style.removeProperty('overflow');
+                document.body.style.removeProperty('padding-right');
+            }
+            lastBackClickTime = 0;
+            if (rearm !== false) {
+                rearmDashboardGuard();
             }
         }
 
@@ -733,6 +806,7 @@ document.addEventListener('DOMContentLoaded', function () {
             const modalEl = document.getElementById('signout-confirm-modal');
             if (modalEl && typeof bootstrap !== 'undefined' && bootstrap.Modal) {
                 const modal = bootstrap.Modal.getInstance(modalEl) || new bootstrap.Modal(modalEl);
+                modalEl.setAttribute('data-ps-active', 'true');
                 modal.show();
                 const card = modalEl.querySelector('.modal-content');
                 if (card) {
@@ -755,8 +829,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 signoutTimerInterval = setInterval(function () {
                     remainingMs -= stepMs;
                     if (remainingMs <= 0) {
-                        clearSignoutTimer();
-                        modal.hide();
+                        dismissSignoutModal(true);
                         return;
                     }
                     const sec = Math.ceil(remainingMs / 1000);
@@ -767,20 +840,16 @@ document.addEventListener('DOMContentLoaded', function () {
                     }
                 }, stepMs);
 
-                // Stop timer if closed by user clicking "Stay on Dashboard" or "Sign Out"
-                modalEl.removeEventListener('hidden.bs.modal', clearSignoutTimer);
+                // Stop timer & rearm guard if closed by user clicking "Stay on Dashboard" or modal dismissed
                 modalEl.addEventListener('hidden.bs.modal', function () {
-                    clearSignoutTimer();
-                    modalEl.removeAttribute('data-ps-active');
-                    lastBackClickTime = 0;
+                    dismissSignoutModal(true);
                 }, { once: true });
 
                 const stayBtn = document.getElementById('stay-signed-in-btn');
                 if (stayBtn) {
-                    stayBtn.addEventListener('click', function () {
-                        if (modalEl) modalEl.removeAttribute('data-ps-active');
-                        lastBackClickTime = 0;
-                    });
+                    stayBtn.onclick = function () {
+                        dismissSignoutModal(true);
+                    };
                 }
             } else if (window.PSConfirm) {
                 window.PSConfirm({
@@ -793,6 +862,8 @@ document.addEventListener('DOMContentLoaded', function () {
                 }).then(function (ok) {
                     if (ok) {
                         window.location.replace('/logout/');
+                    } else {
+                        dismissSignoutModal(true);
                     }
                 });
             }
@@ -966,21 +1037,16 @@ document.addEventListener('DOMContentLoaded', function () {
                     modalEl.getAttribute('data-ps-active') === 'true'
                 );
 
-                if ((timeDiff > 0 && timeDiff < 1500) || isModalOpen) {
-                    // Double-click detected (within 1.5 seconds) OR modal was already triggered!
+                if ((timeDiff > 0 && timeDiff < 2000) || isModalOpen) {
+                    // Double-click detected (within 2 seconds) OR modal was already open!
                     // User explicitly insists on exiting -> auto sign out immediately!
+                    markUserSignedOut();
                     performSignout('/login/?reason=signed_out');
                     return;
                 }
 
                 // First back click on dashboard root: Re-push guard barrier and show confirmation modal
-                try {
-                    window.history.pushState(
-                        { ps_portal: true, isPsGuard: true, isPsBase: true, isInitialEntry: true, rootPath: currentPath },
-                        document.title,
-                        window.location.href
-                    );
-                } catch (err) {}
+                rearmDashboardGuard();
 
                 if (modalEl) {
                     modalEl.setAttribute('data-ps-active', 'true');
