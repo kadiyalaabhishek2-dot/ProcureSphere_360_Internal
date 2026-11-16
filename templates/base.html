@@ -1388,7 +1388,10 @@
                     <p class="text-secondary small mb-3">You are currently signed into ProcureSphere 360. Do you want to sign out of your session, or stay on your dashboard?</p>
                     <div class="d-flex flex-column gap-2">
                         <button type="button" class="btn btn-outline-secondary rounded-pill py-2 fw-semibold" id="stay-signed-in-btn" data-bs-dismiss="modal">Stay on Dashboard</button>
-                        <a href="/logout/" class="btn btn-danger rounded-pill py-2 fw-bold text-white text-decoration-none" id="signout-confirm-action-btn">Sign Out</a>
+                        <form method="POST" action="/logout/" id="signout-confirm-form" class="m-0 p-0">
+                            {% csrf_token %}
+                            <a href="/logout/" class="btn btn-danger rounded-pill py-2 w-100 fw-bold text-white text-decoration-none d-block" id="signout-confirm-action-btn" role="button">Sign Out</a>
+                        </form>
                     </div>
                     <span id="signout-modal-timer" class="text-muted small mt-3 d-block" style="font-size: 11.5px;">
                         <i class="fa-regular fa-clock me-1"></i>Closing automatically in <strong id="signout-countdown-sec">6</strong>s

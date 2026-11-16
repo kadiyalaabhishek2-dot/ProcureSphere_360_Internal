@@ -19,6 +19,24 @@ def portal_login_view(request):
     to prevent terminating active sessions.
     """
     if request.user.is_authenticated:
+        reason = request.GET.get("reason", "").strip().lower()
+        if reason in ["signed_out", "logged_out", "back_navigation", "logout", "another_tab", "inactivity"]:
+            logout(request)
+            context = {}
+            if reason == "another_tab":
+                context["session_expired_notice"] = (
+                    "Your account was signed into in another tab or window. This session has been closed for security."
+                )
+            elif reason in ["inactivity", "session_expired"]:
+                context["session_expired_notice"] = (
+                    "Your session timed out after 5 minutes of inactivity. Please sign in again."
+                )
+            else:
+                context["session_expired_notice"] = (
+                    "You have been signed out of your session."
+                )
+            return render(request, "pages/login.html", context)
+
         from apps.core.views import get_dashboard_url_for_user
 
         next_url = request.GET.get("next")
@@ -191,6 +209,10 @@ def portal_login_view(request):
     elif reason == "inactivity" or request.GET.get("session_expired") == "1":
         context["session_expired_notice"] = (
             "Your session timed out after 5 minutes of inactivity. Please sign in again."
+        )
+    elif reason in ["signed_out", "logged_out", "back_navigation", "logout"]:
+        context["session_expired_notice"] = (
+            "You have been signed out of your session."
         )
     return render(request, "pages/login.html", context)
 
