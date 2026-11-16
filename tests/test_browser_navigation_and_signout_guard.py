@@ -181,15 +181,59 @@ class TestBrowserNavigationAndSignoutGuard:
         assert data.get("ok") is True
         assert data.get("redirect") == "/requester/"
 
-    def test_login_template_contains_ajax_replace_and_session_broadcast(self):
-        """login.html contains AJAX submission with window.location.replace and BroadcastChannel sync."""
+    def test_login_template_contains_ajax_navigation_and_session_broadcast(self):
+        """login.html contains AJAX submission with dashboard redirect and BroadcastChannel sync."""
         with open("templates/pages/login.html", "r", encoding="utf-8") as f:
             login_html = f.read()
 
-        assert "window.location.replace(data.redirect)" in login_html
+        assert "window.location.href = data.redirect" in login_html
         assert "ps360_session_channel" in login_html
         assert "ps360_active_session_id" in login_html
         assert "NEW_LOGIN" in login_html
+
+    def test_authenticated_user_visiting_login_with_signed_out_reason_is_logged_out(self, client):
+        """Authenticated user arriving on /login/?reason=signed_out is logged out and sees sign-out banner."""
+        role, _ = Role.objects.get_or_create(code=Role.SUPER_ADMIN, defaults={"name": "Super Admin"})
+        user = User.objects.create_user(
+            email="auth_logout_back_test@procuresphere.com",
+            password="Password123!",
+            role=role,
+        )
+        client.force_login(user)
+        assert "_auth_user_id" in client.session
+
+        resp = client.get("/login/?reason=signed_out")
+        assert resp.status_code == 200
+        content = resp.content.decode("utf-8")
+        assert "You have been signed out of your session." in content
+        # Session is terminated
+        assert "_auth_user_id" not in client.session
+
+    def test_signout_modal_contains_csrf_post_form(self, client):
+        """Dashboard sign-out modal contains a POST form to /logout/ with CSRF protection."""
+        role, _ = Role.objects.get_or_create(code=Role.SUPER_ADMIN, defaults={"name": "Super Admin"})
+        user = User.objects.create_user(
+            email="signout_form_test@procuresphere.com",
+            password="Password123!",
+            role=role,
+        )
+        client.force_login(user)
+        resp = client.get("/superadmin/")
+        assert resp.status_code == 200
+        content = resp.content.decode("utf-8")
+        assert 'id="signout-confirm-form"' in content
+        assert 'action="/logout/"' in content
+        assert 'id="signout-confirm-action-btn"' in content
+
+    def test_app_js_contains_perform_signout_and_gesture_arming(self):
+        """app.js contains performSignout function, gesture listeners, and repeat back-click exit logic."""
+        with open("static/js/app.js", "r", encoding="utf-8") as f:
+            app_js = f.read()
+
+        assert "performSignout" in app_js
+        assert "ensureArmedOnGesture" in app_js
+        assert "isModalOpen" in app_js
+        assert "/login/?reason=signed_out" in app_js
 
     def test_session_timeout_js_contains_multi_tab_sync_and_5min_timer(self):
         """session_timeout.js contains multi-tab session listener and 5-minute inactivity timeout."""

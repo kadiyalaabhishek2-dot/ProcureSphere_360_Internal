@@ -803,9 +803,8 @@
                             } catch (bcErr) {}
                         }
 
-                        // Replace current history entry so /login/ is not in the history stack
-                        // (disables left arrow when opened in a new tab)
-                        window.location.replace(data.redirect);
+                        // Navigate to dashboard
+                        window.location.href = data.redirect;
                         return;
                     }
 

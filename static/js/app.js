@@ -515,27 +515,47 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     });
 
-    // Intercept logout links to trigger session termination and redirect directly to /login/
+    function performSignout(redirectUrl) {
+        redirectUrl = redirectUrl || '/login/?reason=signed_out';
+        try {
+            sessionStorage.clear();
+            localStorage.removeItem('ps360_active_session_id');
+            localStorage.removeItem('ps360_active_session_time');
+            localStorage.removeItem('ps360_idle_last_activity_ms');
+            localStorage.removeItem('ps360_idle_expired_at_ms');
+        } catch (e) {}
+
+        const csrfToken = getCookie('csrftoken');
+        const headers = { 'X-Requested-With': 'XMLHttpRequest' };
+        if (csrfToken) {
+            headers['X-CSRFToken'] = csrfToken;
+        }
+
+        fetch('/logout/', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: headers
+        }).catch(function () {
+            // Ignore error and proceed directly to target redirect
+        }).finally(function () {
+            window.location.href = redirectUrl;
+        });
+    }
+    window.PSPerformSignout = performSignout;
+
+    // Intercept logout links & forms to trigger session termination and redirect directly to login
+    document.addEventListener('submit', function (e) {
+        if (e.target && (e.target.id === 'signout-confirm-form' || e.target.getAttribute('action') === '/logout/')) {
+            e.preventDefault();
+            performSignout();
+        }
+    });
+
     document.addEventListener('click', function (e) {
         const logoutLink = e.target.closest('a[href="/logout/"], a[href^="/logout"], #signout-confirm-action-btn');
         if (logoutLink) {
             e.preventDefault();
-            try {
-                sessionStorage.removeItem('ps_nav_stack');
-                sessionStorage.removeItem('ps_nav_index');
-                sessionStorage.removeItem('ps_just_logged_in');
-                sessionStorage.removeItem('ps_visited_subpage');
-                sessionStorage.removeItem('ps_last_subpage_path');
-                sessionStorage.removeItem('ps_active_tab');
-            } catch (err) {}
-            const targetUrl = logoutLink.getAttribute('href') || '/logout/';
-            fetch(targetUrl, {
-                method: 'GET',
-                credentials: 'same-origin',
-                headers: { 'X-Requested-With': 'XMLHttpRequest' }
-            }).finally(function () {
-                window.location.replace('/login/');
-            });
+            performSignout();
         }
     });
 
@@ -720,6 +740,18 @@ document.addEventListener('DOMContentLoaded', function () {
             }
         });
 
+        // Ensure guard is actively re-armed on any genuine user gesture across the document
+        function ensureArmedOnGesture() {
+            if (isDashboardRoot(window.location.pathname)) {
+                if (!window.history.state || !window.history.state.isPsGuard) {
+                    armDashboardGuard();
+                }
+            }
+        }
+        ['click', 'keydown', 'touchstart'].forEach(function (evtName) {
+            window.addEventListener(evtName, ensureArmedOnGesture, { passive: true });
+        });
+
         // Tab state tracking for in-page tabs
         let tabHistory = [];
 
@@ -822,9 +854,17 @@ document.addEventListener('DOMContentLoaded', function () {
                 }
 
                 // Case 5: User is on the Dashboard Root and clicks Back (or double clicks / clicks repeatedly)
-                // IMMEDIATELY re-push the guard barrier to lock browser history on the dashboard root!
-                // This neutralizes rapid double-clicks, triple-clicks, or post-timer clicks,
-                // ensuring the user stays safely locked on the dashboard and NEVER escapes to /login/!
+                const modalEl = document.getElementById('signout-confirm-modal');
+                const isModalOpen = modalEl && (modalEl.classList.contains('show') || modalEl.style.display === 'block');
+
+                if (isModalOpen) {
+                    // Modal was ALREADY open and user clicked Back again -> User explicitly insists on exiting!
+                    // Execute POST /logout/ immediately to cleanly terminate session and redirect to /login/?reason=signed_out
+                    performSignout('/login/?reason=signed_out');
+                    return;
+                }
+
+                // First back click on dashboard root: Re-push guard barrier and show confirmation modal
                 try {
                     window.history.pushState(
                         { ps_portal: true, isPsGuard: true, isPsBase: true, isInitialEntry: true, rootPath: currentPath },
