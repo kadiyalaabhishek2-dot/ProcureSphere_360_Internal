@@ -233,7 +233,45 @@ class TestBrowserNavigationAndSignoutGuard:
         assert "performSignout" in app_js
         assert "ensureArmedOnGesture" in app_js
         assert "isModalOpen" in app_js
+        assert "lastBackClickTime" in app_js
+        assert "ps360_user_signed_out" in app_js
         assert "/login/?reason=signed_out" in app_js
+
+    def test_security_headers_middleware_sets_anti_cache_headers_for_authenticated_users(self, client):
+        """Authenticated GET responses receive strict anti-cache headers to prevent bfcache retention on forward navigation."""
+        role, _ = Role.objects.get_or_create(code=Role.SUPER_ADMIN, defaults={"name": "Super Admin"})
+        user = User.objects.create_user(
+            email="anticache_test@procuresphere.com",
+            password="Password123!",
+            role=role,
+        )
+        client.force_login(user)
+        resp = client.get("/superadmin/")
+        assert resp.status_code == 200
+        cache_control = resp.headers.get("Cache-Control", "")
+        assert "no-cache" in cache_control
+        assert "no-store" in cache_control
+        assert "must-revalidate" in cache_control
+        assert resp.headers.get("Pragma") == "no-cache"
+        assert resp.headers.get("Expires") == "0"
+
+    def test_session_keepalive_get_returns_status_and_rejects_unauthenticated(self, client):
+        """GET /api/v1/auth/session-keepalive/ returns 200 for authenticated user and 401 for anonymous."""
+        # Anonymous
+        resp_anon = client.get("/api/v1/auth/session-keepalive/")
+        assert resp_anon.status_code == 401
+
+        # Authenticated
+        role, _ = Role.objects.get_or_create(code=Role.REQUESTER, defaults={"name": "Requester"})
+        user = User.objects.create_user(
+            email="keepalive_get_test@procuresphere.com",
+            password="Password123!",
+            role=role,
+        )
+        client.force_login(user)
+        resp_auth = client.get("/api/v1/auth/session-keepalive/")
+        assert resp_auth.status_code == 200
+        assert resp_auth.json().get("status") == "authenticated"
 
     def test_session_timeout_js_contains_multi_tab_sync_and_5min_timer(self):
         """session_timeout.js contains multi-tab session listener and 5-minute inactivity timeout."""

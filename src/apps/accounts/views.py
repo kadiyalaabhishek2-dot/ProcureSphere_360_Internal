@@ -20,7 +20,11 @@ def portal_login_view(request):
     """
     if request.user.is_authenticated:
         reason = request.GET.get("reason", "").strip().lower()
-        if reason in ["signed_out", "logged_out", "back_navigation", "logout", "another_tab", "inactivity"]:
+        if (
+            reason in ["signed_out", "logged_out", "back_navigation", "logout", "another_tab", "inactivity"]
+            or request.COOKIES.get("ps360_just_logged_out") == "1"
+            or request.COOKIES.get("ps360_user_signed_out") == "1"
+        ):
             logout(request)
             context = {}
             if reason == "another_tab":
@@ -35,7 +39,10 @@ def portal_login_view(request):
                 context["session_expired_notice"] = (
                     "You have been signed out of your session."
                 )
-            return render(request, "pages/login.html", context)
+            response = render(request, "pages/login.html", context)
+            response.delete_cookie("ps360_just_logged_out")
+            response.delete_cookie("ps360_user_signed_out")
+            return response
 
         from apps.core.views import get_dashboard_url_for_user
 

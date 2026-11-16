@@ -787,6 +787,10 @@
                             localStorage.setItem('ps360_active_session_time', String(Date.now()));
                             localStorage.removeItem('ps360_idle_expired_at_ms');
                             localStorage.setItem('ps360_idle_last_activity_ms', String(Date.now()));
+                            sessionStorage.removeItem('ps360_user_signed_out');
+                            localStorage.removeItem('ps360_user_signed_out');
+                            document.cookie = "ps360_just_logged_out=; path=/; max-age=0";
+                            document.cookie = "ps360_user_signed_out=; path=/; max-age=0";
                             sessionStorage.setItem('ps360_tab_session_id', sessionId);
                             sessionStorage.setItem('ps_just_logged_in', 'true');
                             sessionStorage.setItem('ps_portal_initialized', 'true');
