@@ -209,6 +209,10 @@ def portal_login_view(request):
 
     context = {}
     reason = request.GET.get("reason", "").strip().lower()
+    has_signout_cookie = (
+        request.COOKIES.get("ps360_just_logged_out") == "1"
+        or request.COOKIES.get("ps360_user_signed_out") == "1"
+    )
     if reason == "another_tab":
         context["session_expired_notice"] = (
             "Your account was signed into in another tab or window. This session has been closed for security."
@@ -217,11 +221,15 @@ def portal_login_view(request):
         context["session_expired_notice"] = (
             "Your session timed out after 5 minutes of inactivity. Please sign in again."
         )
-    elif reason in ["signed_out", "logged_out", "back_navigation", "logout"]:
+    elif reason in ["signed_out", "logged_out", "back_navigation", "logout"] or has_signout_cookie:
         context["session_expired_notice"] = (
             "You have been signed out of your session."
         )
-    return render(request, "pages/login.html", context)
+    response = render(request, "pages/login.html", context)
+    if has_signout_cookie:
+        response.delete_cookie("ps360_just_logged_out")
+        response.delete_cookie("ps360_user_signed_out")
+    return response
 
 
 

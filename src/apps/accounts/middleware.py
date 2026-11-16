@@ -82,19 +82,26 @@ class SessionIdleTimeoutMiddleware:
 
     def __call__(self, request):
         user = getattr(request, "user", None)
-        if user is None or not user.is_authenticated:
-            return self.get_response(request)
+        path = request.path or "/"
+        is_exempt = path in TIMEOUT_EXEMPT_PATHS or path.startswith(TIMEOUT_EXEMPT_PREFIXES)
 
         # Check if user backed out / exited to Chrome homepage: terminate session on forward navigation
-        if request.COOKIES.get("ps360_user_signed_out") == "1" or request.COOKIES.get("ps360_just_logged_out") == "1":
-            logout(request)
+        has_signout_cookie = (
+            request.COOKIES.get("ps360_user_signed_out") == "1"
+            or request.COOKIES.get("ps360_just_logged_out") == "1"
+        )
+        if has_signout_cookie and not is_exempt:
+            if user is not None and user.is_authenticated:
+                logout(request)
             response = redirect("/login/?reason=signed_out")
             response.delete_cookie("ps360_user_signed_out")
             response.set_cookie("ps360_just_logged_out", "1", max_age=60, path="/", samesite="Lax")
             return response
 
-        path = request.path or "/"
-        if path in TIMEOUT_EXEMPT_PATHS or path.startswith(TIMEOUT_EXEMPT_PREFIXES):
+        if user is None or not user.is_authenticated:
+            return self.get_response(request)
+
+        if is_exempt:
             return self.get_response(request)
 
         timeout_seconds = int(getattr(settings, "SESSION_IDLE_TIMEOUT_SECONDS", DEFAULT_IDLE_TIMEOUT_SECONDS))
