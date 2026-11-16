@@ -76,9 +76,15 @@
 
                         <div class="d-flex align-items-center gap-2">
                             {% if notif.target_url %}
-                            <a href="{{ notif.target_url }}" class="btn btn-outline-primary btn-sm py-0 px-2 rounded-pill" style="font-size: 0.75rem;">
-                                View Details &rarr;
-                            </a>
+                                {% if '/orders/' in notif.target_url and not '/vendor/purchase-orders/' in notif.target_url %}
+                                <a href="/vendor/purchase-orders/{{ notif.target_url|cut:'/orders/' }}" class="btn btn-outline-primary btn-sm py-0 px-2 rounded-pill" style="font-size: 0.75rem;">
+                                    View Details &rarr;
+                                </a>
+                                {% else %}
+                                <a href="{{ notif.target_url }}" class="btn btn-outline-primary btn-sm py-0 px-2 rounded-pill" style="font-size: 0.75rem;">
+                                    View Details &rarr;
+                                </a>
+                                {% endif %}
                             {% endif %}
 
                             {% if not notif.is_read %}

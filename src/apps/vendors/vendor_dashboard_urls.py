@@ -8,6 +8,7 @@ urlpatterns = [
     path("dashboard/", views.vendor_dashboard_overview_view, name="vendor_dashboard_home"),
     # Company Profile
     path("profile/", views.vendor_profile_view, name="vendor_profile"),
+    path("onboarding/", views.vendor_onboarding_view, name="vendor_onboarding"),
     # Sourcing (RFQ / RFP)
     path("sourcing/", views.vendor_sourcing_list_view, name="vendor_sourcing_list"),
     path(
@@ -85,7 +86,15 @@ urlpatterns = [
         views.vendor_invoice_submit_view,
         name="vendor_invoice_submit",
     ),
+    path("payments/", views.vendor_payments_view, name="vendor_payments"),
     path("contracts/", views.vendor_contracts_view, name="vendor_contracts"),
+    path(
+        "contracts/<uuid:contract_id>/",
+        views.vendor_contract_detail_view,
+        name="vendor_contract_detail",
+    ),
+    # Support & Helpdesk
+    path("support/", views.vendor_support_view, name="vendor_support"),
     # Documents & Secure Download
     path("documents/", views.vendor_documents_view, name="vendor_documents"),
     path(

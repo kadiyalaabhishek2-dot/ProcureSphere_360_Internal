@@ -18,8 +18,14 @@ from django.views.decorators.http import require_POST
 
 from apps.accounts.models import Role
 from apps.audit.models import AuditLog
-from apps.contracts.models import Contract
-from apps.invoices.models import InvoiceLine, SupplierInvoice
+from apps.contracts.models import (
+    Contract,
+    ContractDocument,
+    ContractMilestone,
+    ContractObligation,
+    ContractVersion,
+)
+from apps.invoices.models import InvoiceLine, PaymentStatus, SupplierInvoice
 from apps.invoices.services import create_supplier_invoice_service
 from apps.notifications.models import Notification
 from apps.orders.models import PurchaseOrder
@@ -547,6 +553,56 @@ def vendor_profile_view(request):
         "active_nav": "profile",
     }
     return render(request, "pages/vendor/profile.html", context)
+
+
+@vendor_required
+def vendor_onboarding_view(request):
+    """
+    Dedicated Vendor Onboarding & Qualification Hub:
+    Displays completion progress across all 5 mandatory milestones with direct links
+    and guidance for completing registration, banking, contacts, and KYC validation.
+    """
+    vendor = request.vendor
+    onboarding = get_vendor_onboarding_progress(vendor)
+    contacts = vendor.contacts.all().order_by("-is_primary", "first_name")
+    kyc_docs = VendorDocument.objects.filter(vendor=vendor).order_by("-created_at")
+
+    uploaded_doc_types = set(kyc_docs.values_list("document_type", flat=True))
+    mandatory_checklist = [
+        {
+            "code": "PAN",
+            "name": "PAN Card (Permanent Account Number)",
+            "uploaded": VendorDocument.DOC_TYPE_PAN in uploaded_doc_types,
+            "doc": kyc_docs.filter(document_type=VendorDocument.DOC_TYPE_PAN).first(),
+        },
+        {
+            "code": "TAX_REG",
+            "name": "GSTIN / Tax Registration Certificate",
+            "uploaded": (
+                VendorDocument.DOC_TYPE_GST in uploaded_doc_types
+                or VendorDocument.DOC_TYPE_TAX in uploaded_doc_types
+            ),
+            "doc": kyc_docs.filter(
+                document_type__in=[VendorDocument.DOC_TYPE_GST, VendorDocument.DOC_TYPE_TAX]
+            ).first(),
+        },
+        {
+            "code": "BANK_STATEMENT",
+            "name": "Cancelled Cheque / Bank Statement",
+            "uploaded": VendorDocument.DOC_TYPE_BANK in uploaded_doc_types,
+            "doc": kyc_docs.filter(document_type=VendorDocument.DOC_TYPE_BANK).first(),
+        },
+    ]
+
+    context = {
+        "vendor": vendor,
+        "active_nav": "onboarding",
+        "onboarding": onboarding,
+        "contacts": contacts,
+        "kyc_docs": kyc_docs,
+        "mandatory_checklist": mandatory_checklist,
+    }
+    return render(request, "pages/vendor/onboarding.html", context)
 
 
 # ==============================================================================
@@ -2106,16 +2162,155 @@ def vendor_invoice_submit_view(request, po_id=None):
 
 
 @vendor_required
-def vendor_contracts_view(request):
+def vendor_payments_view(request):
+    """
+    Dedicated Vendor Payments Ledger & Remittance Tracking:
+    Displays completed disbursements (PaymentStatus records) and pending payments
+    (invoices in READY_FOR_PAYMENT / APPROVAL) with search, filter, and remittance summaries.
+    """
     vendor = request.vendor
-    contracts = Contract.objects.filter(vendor=vendor).order_by("-created_at")
+    status_tab = request.GET.get("tab", "disbursed")  # 'disbursed' or 'pending'
+    search_query = request.GET.get("q", "").strip()
+
+    # Disbursed payments
+    payments_qs = (
+        PaymentStatus.objects.filter(invoice__vendor=vendor)
+        .select_related("invoice", "invoice__po", "paid_by")
+        .order_by("-payment_date")
+    )
+
+    # Invoices currently in payment pipeline (not yet disbursed)
+    pending_qs = (
+        SupplierInvoice.objects.filter(
+            vendor=vendor,
+            status__in=[SupplierInvoice.STATUS_READY_FOR_PAYMENT, SupplierInvoice.STATUS_APPROVAL],
+        )
+        .select_related("po")
+        .order_by("-due_date")
+    )
+
+    if search_query:
+        payments_qs = payments_qs.filter(
+            Q(payment_reference__icontains=search_query)
+            | Q(invoice__invoice_number__icontains=search_query)
+            | Q(invoice__po__po_number__icontains=search_query)
+        )
+        pending_qs = pending_qs.filter(
+            Q(invoice_number__icontains=search_query)
+            | Q(po__po_number__icontains=search_query)
+        )
+
+    # Compute key metrics
+    all_payments = PaymentStatus.objects.filter(invoice__vendor=vendor)
+    total_disbursed = (
+        all_payments.aggregate(total=Sum("amount_paid"))["total"] or Decimal("0.00")
+    )
+
+    all_pending = SupplierInvoice.objects.filter(
+        vendor=vendor,
+        status__in=[SupplierInvoice.STATUS_READY_FOR_PAYMENT, SupplierInvoice.STATUS_APPROVAL],
+    )
+    pending_amount = (
+        all_pending.aggregate(total=Sum("total_amount"))["total"] or Decimal("0.00")
+    )
+    settled_invoices_count = SupplierInvoice.objects.filter(
+        vendor=vendor, status=SupplierInvoice.STATUS_PAID
+    ).count()
+    pending_count = all_pending.count()
+
+    context = {
+        "vendor": vendor,
+        "active_nav": "payments",
+        "tab": status_tab,
+        "search_query": search_query,
+        "payments": payments_qs,
+        "pending_invoices": pending_qs,
+        "total_disbursed": total_disbursed,
+        "pending_amount": pending_amount,
+        "settled_count": settled_invoices_count,
+        "pending_count": pending_count,
+    }
+    return render(request, "pages/vendor/payments.html", context)
+
+
+@vendor_required
+def vendor_contracts_view(request):
+    """
+    Vendor Contracts & Legal Agreements:
+    Lists all executed, active, renewal-due, and historical contracts for this vendor
+    with status filtering, search, and aggregate metrics.
+    """
+    vendor = request.vendor
+    status_filter = request.GET.get("status", "ALL")
+    search_query = request.GET.get("q", "").strip()
+
+    qs = (
+        Contract.objects.filter(vendor=vendor)
+        .select_related("po", "sourcing_event", "contract_owner")
+        .order_by("-created_at")
+    )
+
+    if status_filter != "ALL" and status_filter:
+        qs = qs.filter(status=status_filter)
+
+    if search_query:
+        qs = qs.filter(
+            Q(contract_number__icontains=search_query)
+            | Q(title__icontains=search_query)
+        )
+
+    all_contracts = Contract.objects.filter(vendor=vendor)
+    active_contracts = all_contracts.filter(status=Contract.STATUS_ACTIVE)
+    total_active_value = (
+        active_contracts.aggregate(total=Sum("contract_value"))["total"] or Decimal("0.00")
+    )
+    renewal_due_count = all_contracts.filter(status=Contract.STATUS_RENEWAL_DUE).count()
 
     context = {
         "vendor": vendor,
         "active_nav": "contracts",
-        "contracts": contracts,
+        "contracts": qs,
+        "total_active_value": total_active_value,
+        "active_count": active_contracts.count(),
+        "renewal_due_count": renewal_due_count,
+        "total_count": all_contracts.count(),
+        "status_filter": status_filter,
+        "search_query": search_query,
+        "status_choices": Contract.STATUS_CHOICES,
     }
     return render(request, "pages/vendor/contracts.html", context)
+
+
+@vendor_required
+def vendor_contract_detail_view(request, contract_id):
+    """
+    Detailed Contract View:
+    Displays contract terms, commercials, milestones, obligations, versions, and executed documents.
+    Enforces strict vendor tenant isolation (404/403 for unauthorized access).
+    """
+    vendor = request.vendor
+    contract = get_object_or_404(
+        Contract.objects.select_related("po", "sourcing_event", "contract_owner")
+        .prefetch_related("versions", "milestones", "obligations", "documents"),
+        id=contract_id,
+        vendor=vendor,
+    )
+
+    milestones = contract.milestones.all().order_by("due_date")
+    obligations = contract.obligations.all().order_by("due_date")
+    versions = contract.versions.all().order_by("-version_number")
+    documents = contract.documents.all().order_by("-created_at")
+
+    context = {
+        "vendor": vendor,
+        "contract": contract,
+        "milestones": milestones,
+        "obligations": obligations,
+        "versions": versions,
+        "documents": documents,
+        "active_nav": "contracts",
+    }
+    return render(request, "pages/vendor/contract_detail.html", context)
 
 
 # ==============================================================================
@@ -2369,9 +2564,18 @@ def vendor_notifications_view(request):
     """
     Vendor Notifications Center:
     Displays in-app notifications with read/unread tracking and direct action links.
+    Sanitizes any internal staff target URLs (e.g. /orders/<id>/) to safe vendor portal routes.
     """
     notifications = Notification.objects.filter(recipient=request.user).order_by("-created_at")
     unread_count = notifications.filter(is_read=False).count()
+
+    # Sanitize vendor notification target URLs to vendor portal routes
+    for notif in notifications:
+        if notif.target_url:
+            if notif.target_url.startswith("/orders/"):
+                notif.target_url = notif.target_url.replace("/orders/", "/vendor/purchase-orders/", 1)
+            elif notif.target_url.startswith("/sourcing/") and not notif.target_url.startswith("/vendor/sourcing/"):
+                notif.target_url = notif.target_url.replace("/sourcing/", "/vendor/sourcing/", 1)
 
     context = {
         "vendor": request.vendor,
@@ -2380,6 +2584,113 @@ def vendor_notifications_view(request):
         "active_nav": "notifications",
     }
     return render(request, "pages/vendor/notifications.html", context)
+
+
+@vendor_required
+def vendor_support_view(request):
+    """
+    Vendor Support & Helpdesk:
+    Provides ticket logging, communication with assigned buyers/procurement officers,
+    guidelines/FAQs, and tracking of logged inquiries.
+    """
+    vendor = request.vendor
+
+    if request.method == "POST":
+        category = request.POST.get("category", "GENERAL").strip()
+        priority = request.POST.get("priority", "NORMAL").strip()
+        subject = request.POST.get("subject", "").strip()
+        message_text = request.POST.get("message", "").strip()
+        reference_no = request.POST.get("reference_no", "").strip()
+
+        if not subject or not message_text:
+            messages.error(request, "Please provide both a subject and message description for your inquiry.")
+            return redirect("vendor_support")
+
+        import uuid
+        ticket_ref = f"TKT-{uuid.uuid4().hex[:8].upper()}"
+
+        # Record ticket into AuditLog
+        AuditLog.objects.create(
+            actor=request.user,
+            action="SUPPORT_INQUIRY",
+            target_model="Vendor",
+            target_object_id=str(vendor.id),
+            new_state={
+                "ticket_ref": ticket_ref,
+                "category": category,
+                "priority": priority,
+                "subject": subject,
+                "reference_no": reference_no,
+                "message": message_text,
+            },
+        )
+
+        # Notify vendor user
+        Notification.objects.create(
+            recipient=request.user,
+            notification_type="SYSTEM_ALERT",
+            title=f"Support Inquiry Registered: {ticket_ref}",
+            message=f"Your ticket regarding '{subject}' ({category}) has been submitted to the Procurement Helpdesk.",
+            target_url="/vendor/support/",
+        )
+
+        messages.success(
+            request,
+            f"Support ticket #{ticket_ref} submitted successfully. Our procurement team will respond shortly."
+        )
+        return redirect("vendor_support")
+
+    # GET: Retrieve recent support inquiries
+    recent_inquiries = AuditLog.objects.filter(
+        actor=request.user,
+        action="SUPPORT_INQUIRY",
+        target_model="Vendor",
+        target_object_id=str(vendor.id),
+    ).order_by("-timestamp")[:10]
+
+    parsed_inquiries = []
+    for log in recent_inquiries:
+        state = log.new_state if isinstance(log.new_state, dict) else {}
+        parsed_inquiries.append({
+            "ticket_ref": state.get("ticket_ref", f"TKT-{str(log.id)[:8]}"),
+            "category": state.get("category", "General"),
+            "priority": state.get("priority", "NORMAL"),
+            "subject": state.get("subject", "Support Inquiry"),
+            "reference_no": state.get("reference_no", ""),
+            "message": state.get("message", ""),
+            "created_at": log.timestamp,
+        })
+
+    # Internal procurement contacts from vendor POs and contracts
+    assigned_owners = []
+    seen_user_ids = set()
+
+    for po in PurchaseOrder.objects.filter(vendor=vendor).exclude(created_by__isnull=True).select_related("created_by")[:5]:
+        if po.created_by_id not in seen_user_ids:
+            seen_user_ids.add(po.created_by_id)
+            assigned_owners.append({
+                "name": po.created_by.get_full_name() or po.created_by.username,
+                "role": "Procurement Officer",
+                "email": po.created_by.email or "procurement@procuresphere.com",
+            })
+
+    for c in Contract.objects.filter(vendor=vendor).select_related("contract_owner")[:5]:
+        if c.contract_owner_id not in seen_user_ids:
+            seen_user_ids.add(c.contract_owner_id)
+            assigned_owners.append({
+                "name": c.contract_owner.get_full_name() or c.contract_owner.username,
+                "role": "Contract Administrator",
+                "email": c.contract_owner.email or "contracts@procuresphere.com",
+            })
+
+    context = {
+        "vendor": vendor,
+        "active_nav": "support",
+        "inquiries": parsed_inquiries,
+        "procurement_contacts": assigned_owners,
+        "vendor_contacts": vendor.contacts.all(),
+    }
+    return render(request, "pages/vendor/support.html", context)
 
 
 @vendor_required
