@@ -210,23 +210,24 @@ class ApprovalPolicy(TimeStampedModel):
             orig = ApprovalPolicy.objects.filter(pk=self.pk).values("is_active", "status").first()
 
         if orig:
-            if orig["is_active"] != self.is_active:
-                if not self.is_active:
-                    self.status = self.STATUS_ARCHIVED
-                else:
-                    self.status = self.STATUS_ACTIVE
-            elif orig["status"] != self.status:
+            if orig["status"] != self.status:
                 if self.status == self.STATUS_ACTIVE:
                     self.is_active = True
                 elif self.status in [self.STATUS_ARCHIVED, self.STATUS_DRAFT]:
                     self.is_active = False
+            elif orig["is_active"] != self.is_active:
+                if not self.is_active:
+                    if self.status != self.STATUS_DRAFT:
+                        self.status = self.STATUS_ARCHIVED
+                else:
+                    self.status = self.STATUS_ACTIVE
         else:
-            if not self.is_active and self.status == self.STATUS_ACTIVE:
-                self.status = self.STATUS_ARCHIVED
-            elif self.status == self.STATUS_ACTIVE:
+            if self.status == self.STATUS_ACTIVE:
                 self.is_active = True
             elif self.status in [self.STATUS_ARCHIVED, self.STATUS_DRAFT]:
                 self.is_active = False
+            elif not self.is_active:
+                self.status = self.STATUS_ARCHIVED
 
         if not self.organization_id:
             if self.department_id and self.department:
