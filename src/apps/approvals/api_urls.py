@@ -107,7 +107,8 @@ class ApprovalPolicyViewSet(viewsets.ModelViewSet):
     serializer_class = ApprovalPolicySerializer
     permission_classes = [IsAuthenticated, CanManageApprovalPolicy]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    search_fields = ["name", "module", "description"]
+    search_fields = ["name", "module", "description", "currency"]
+    filterset_fields = ["module", "status", "organization", "department", "currency"]
     ordering_fields = ["name", "min_amount", "created_at"]
 
 
@@ -144,6 +145,24 @@ class ApprovalStepViewSet(viewsets.ModelViewSet):
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
     filterset_fields = ["policy", "approver_role", "step_number"]
     ordering_fields = ["step_number", "created_at"]
+
+    def create(self, request, *args, **kwargs):
+        from django.db import IntegrityError
+        try:
+            return super().create(request, *args, **kwargs)
+        except IntegrityError:
+            return Response(
+                {
+                    "error": {
+                        "code": "VALIDATION_ERROR",
+                        "message": "Validation failed for one or more fields.",
+                        "details": {
+                            "step_number": ["Duplicate step number within the same policy."]
+                        },
+                    }
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
 
 class ApprovalActionViewSet(viewsets.ReadOnlyModelViewSet):

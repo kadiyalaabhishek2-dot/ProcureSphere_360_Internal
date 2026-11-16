@@ -397,6 +397,19 @@ class CanCreateRequisitionPermission(permissions.BasePermission):
 
         return True
 
+    def has_object_permission(self, request, view, obj):
+        if not request.user or not request.user.is_authenticated:
+            return False
+        if request.user.is_superuser:
+            return True
+        role_code = getattr(request.user, "role_code", None) or (
+            request.user.role.code if hasattr(request.user, "role") and request.user.role else None
+        )
+        # DEF-001: Enforce strict object-level authorization - Requesters can only access own requisitions
+        if role_code == Role.REQUESTER:
+            return obj.requester_id == request.user.id
+        return True
+
 
 class PurchaseRequisitionViewSet(viewsets.ModelViewSet):
     queryset = (
@@ -464,16 +477,11 @@ class PurchaseRequisitionViewSet(viewsets.ModelViewSet):
                 ).distinct()
             else:
                 qs = self.queryset.all()
+        elif role_code == Role.REQUESTER:
+            # DEF-001: Requesters can only access their own requisitions (prevents IDOR)
+            qs = self.queryset.filter(requester=user)
         else:
-            # Requesters: can view their own requisitions or permitted departmental requisitions
-            from django.db.models import Q
-
-            req_q = Q(requester=user)
-            if user.department_id:
-                req_q |= Q(department_id=user.department_id) | Q(cost_center__department_id=user.department_id)
-            if user.cost_center_id:
-                req_q |= Q(cost_center_id=user.cost_center_id)
-            qs = self.queryset.filter(req_q).distinct()
+            qs = self.queryset.filter(requester=user)
 
         # Multi-tenant organization enforcement
         user_org = (
