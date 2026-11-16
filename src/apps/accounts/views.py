@@ -363,7 +363,13 @@ def portal_logout_view(request):
 
     logout(request)
 
-    reason = request.GET.get("reason")
+    reason = request.GET.get("reason") or request.POST.get("reason")
+    if reason in ["signed_out", "modal", "back_navigation"]:
+        response = redirect("/login/?reason=signed_out")
+        response.set_cookie("ps360_just_logged_out", "1", max_age=60, path="/", samesite="Lax")
+        response.set_cookie("ps360_user_signed_out", "1", max_age=60, path="/", samesite="Lax")
+        return response
+
     if reason == "new_tab":
         messages.info(request, "Your previous session expired due to multiple active tabs. Please sign in again.")
         return redirect("/login/?session_expired=1")
