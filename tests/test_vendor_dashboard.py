@@ -1727,3 +1727,246 @@ def test_vendor_dashboard_metrics_isolation_and_live_freshness(client, vendor_se
     assert m_a_after_ack["pos_requiring_ack"] == m_a_initial["pos_requiring_ack"]
     assert m_a_after_ack["active_pos"] >= 1
 
+
+@pytest.mark.django_db
+def test_vendor_contracts_list_and_detail_view(client, vendor_setup):
+    """
+    Vendor can view contract listing and contract details (with milestones, obligations,
+    and documents), while cross-vendor access is strictly rejected with 404/403.
+    """
+    from apps.contracts.models import (
+        Contract,
+        ContractMilestone,
+        ContractObligation,
+        ContractDocument,
+    )
+    from django.core.files.uploadedfile import SimpleUploadedFile
+
+    w = vendor_setup
+    v_a = w["vendor_a"]
+    v_b = w["vendor_b"]
+
+    contract = Contract.objects.create(
+        contract_number="CNT-2026-TEST-001",
+        title="Annual IT Support Agreement",
+        vendor=v_a,
+        contract_value=Decimal("75000.00"),
+        start_date=timezone.now().date(),
+        end_date=(timezone.now() + timedelta(days=365)).date(),
+        contract_owner=w["proc_exec"],
+        status=Contract.STATUS_ACTIVE,
+    )
+
+    milestone = ContractMilestone.objects.create(
+        contract=contract,
+        title="Quarter 1 Maintenance & Review",
+        due_date=(timezone.now() + timedelta(days=90)).date(),
+        amount=Decimal("18750.00"),
+        is_completed=False,
+    )
+
+    obligation = ContractObligation.objects.create(
+        contract=contract,
+        title="Submit Monthly SLA Metric Reports",
+        due_date=(timezone.now() + timedelta(days=30)).date(),
+        responsible_party="VENDOR",
+        is_fulfilled=False,
+    )
+
+    test_file = SimpleUploadedFile("contract_terms.pdf", b"%PDF-1.4 sample contract document content", content_type="application/pdf")
+    doc = ContractDocument.objects.create(
+        contract=contract,
+        title="Executed Master Agreement PDF",
+        file=test_file,
+        uploaded_by=w["proc_exec"],
+    )
+
+    # 1. Vendor A views contract listing
+    client.force_login(w["user_vendor_a"])
+    list_res = client.get("/vendor/contracts/")
+    assert list_res.status_code == 200
+    assert "Annual IT Support Agreement" in list_res.content.decode()
+    assert "CNT-2026-TEST-001" in list_res.content.decode()
+
+    # 2. Vendor A views contract detail
+    detail_res = client.get(f"/vendor/contracts/{contract.id}/")
+    assert detail_res.status_code == 200
+    content = detail_res.content.decode()
+    assert "Quarter 1 Maintenance" in content
+    assert "Submit Monthly SLA Metric Reports" in content
+    assert "Executed Master Agreement PDF" in content
+    assert "75000" in content
+
+    # 3. Cross-vendor tenant isolation: Vendor B cannot access Vendor A's contract
+    client.force_login(w["user_vendor_b"])
+    cross_res = client.get(f"/vendor/contracts/{contract.id}/")
+    assert cross_res.status_code in (403, 404)
+
+
+@pytest.mark.django_db
+def test_vendor_payments_view_and_isolation(client, vendor_setup):
+    """
+    Vendor can view payments ledger, disbursed remittance records, and pending invoices,
+    while cross-vendor access is strictly isolated.
+    """
+    from apps.invoices.models import SupplierInvoice, PaymentStatus
+
+    w = vendor_setup
+    v_a = w["vendor_a"]
+    v_b = w["vendor_b"]
+
+    po = PurchaseOrder.objects.create(
+        vendor=v_a,
+        cost_center=w["cost_center"],
+        status=PurchaseOrder.STATUS_ACKNOWLEDGED,
+        total_amount=Decimal("12000.00"),
+    )
+
+    # Paid invoice with PaymentStatus
+    inv_paid = SupplierInvoice.objects.create(
+        vendor=v_a,
+        po=po,
+        invoice_number="INV-PAID-001",
+        invoice_date=timezone.now().date(),
+        due_date=(timezone.now() + timedelta(days=30)).date(),
+        subtotal=Decimal("5000.00"),
+        tax_amount=Decimal("900.00"),
+        total_amount=Decimal("5900.00"),
+        status=SupplierInvoice.STATUS_PAID,
+    )
+
+    payment = PaymentStatus.objects.create(
+        invoice=inv_paid,
+        payment_reference="PAY-REF-998877",
+        payment_date=timezone.now().date(),
+        amount_paid=Decimal("5900.00"),
+        payment_method="NEFT_RTGS",
+        paid_by=w["proc_exec"],
+    )
+
+    # Pending invoice in READY_FOR_PAYMENT
+    inv_pending = SupplierInvoice.objects.create(
+        vendor=v_a,
+        po=po,
+        invoice_number="INV-PENDING-002",
+        invoice_date=timezone.now().date(),
+        due_date=(timezone.now() + timedelta(days=15)).date(),
+        subtotal=Decimal("4000.00"),
+        tax_amount=Decimal("720.00"),
+        total_amount=Decimal("4720.00"),
+        status=SupplierInvoice.STATUS_READY_FOR_PAYMENT,
+    )
+
+    # Vendor A accesses payments
+    client.force_login(w["user_vendor_a"])
+    pay_res = client.get("/vendor/payments/")
+    assert pay_res.status_code == 200
+    content = pay_res.content.decode()
+    assert "PAY-REF-998877" in content
+    assert "5900.00" in content
+
+    # Vendor A checks pending queue tab
+    pending_res = client.get("/vendor/payments/?tab=pending")
+    assert pending_res.status_code == 200
+    pending_content = pending_res.content.decode()
+    assert "INV-PENDING-002" in pending_content
+    assert "4720.00" in pending_content
+
+    # Vendor B cannot see Vendor A's payments
+    client.force_login(w["user_vendor_b"])
+    b_res = client.get("/vendor/payments/")
+    assert b_res.status_code == 200
+    b_content = b_res.content.decode()
+    assert "PAY-REF-998877" not in b_content
+
+
+@pytest.mark.django_db
+def test_vendor_support_view_and_ticket_submission(client, vendor_setup):
+    """
+    Vendor can access Helpdesk & Support, view contacts/guidelines, and submit an inquiry
+    which creates an AuditLog record and notification.
+    """
+    from apps.audit.models import AuditLog
+
+    w = vendor_setup
+    v_a = w["vendor_a"]
+
+    client.force_login(w["user_vendor_a"])
+    get_res = client.get("/vendor/support/")
+    assert get_res.status_code == 200
+    assert "Procurement Support &amp; Helpdesk" in get_res.content.decode()
+
+    post_res = client.post(
+        "/vendor/support/",
+        data={
+            "category": "INVOICE_BILLING",
+            "priority": "HIGH",
+            "reference_no": "INV-TEST-REF",
+            "subject": "Discrepancy in Line Item 2 Tax Rate",
+            "message": "Please review the GST calculation applied on Invoice line 2.",
+        },
+    )
+    assert post_res.status_code == 302
+    assert "/vendor/support/" in post_res.url
+
+    # Verify AuditLog recorded
+    inquiry_log = AuditLog.objects.filter(
+        actor=w["user_vendor_a"],
+        action="SUPPORT_INQUIRY",
+        target_model="Vendor",
+        target_object_id=str(v_a.id),
+    ).first()
+    assert inquiry_log is not None
+    assert inquiry_log.new_state["subject"] == "Discrepancy in Line Item 2 Tax Rate"
+    assert inquiry_log.new_state["priority"] == "HIGH"
+
+
+@pytest.mark.django_db
+def test_vendor_onboarding_hub_view(client, vendor_setup):
+    """
+    Vendor can access dedicated /vendor/onboarding/ route and view checklist progress.
+    """
+    w = vendor_setup
+    client.force_login(w["user_vendor_a"])
+    res = client.get("/vendor/onboarding/")
+    assert res.status_code == 200
+    content = res.content.decode()
+    assert "Vendor Onboarding &amp; Qualification Hub" in content
+    assert "Dossier Completion Progress" in content
+    assert "1. Corporate Profile" in content
+    assert "4. Mandatory KYC Document Bundle" in content
+
+
+@pytest.mark.django_db
+def test_vendor_notifications_target_url_sanitization(client, vendor_setup):
+    """
+    Notification with internal staff target_url (e.g. /orders/<id>/) is safely sanitized
+    to /vendor/purchase-orders/<id>/ to prevent 403 Forbidden errors when clicked by vendor.
+    """
+    from apps.notifications.models import Notification
+
+    w = vendor_setup
+    po = PurchaseOrder.objects.create(
+        vendor=w["vendor_a"],
+        cost_center=w["cost_center"],
+        status=PurchaseOrder.STATUS_ISSUED,
+        total_amount=Decimal("1500.00"),
+    )
+
+    notif = Notification.objects.create(
+        recipient=w["user_vendor_a"],
+        notification_type=Notification.TYPE_PO_ISSUED,
+        title=f"New Purchase Order Issued: {po.po_number}",
+        message=f"A new Purchase Order has been issued.",
+        target_url=f"/orders/{po.id}/",  # Internal URL
+    )
+
+    client.force_login(w["user_vendor_a"])
+    res = client.get("/vendor/notifications/")
+    assert res.status_code == 200
+    content = res.content.decode()
+    # Ensure translated URL exists in page and not raw internal /orders/<id>/
+    assert f"/vendor/purchase-orders/{po.id}/" in content
+    assert f'href="/orders/{po.id}/"' not in content
+
+
