@@ -792,5 +792,104 @@ def test_notification_symbol_not_red_when_zero_unread_notifications_even_with_pe
     assert "bg-danger" not in bell_part_read
 
 
+@pytest.mark.django_db
+def test_view_overrun_prs_shows_only_budget_overrun_requisitions(client, setup_approver_env):
+    """
+    Clicking 'View Overrun PRs' on the Department Approver dashboard:
+    1. Points to /approvals/inbox/?status=BUDGET_REVIEW.
+    2. Filters the Approvals Queue to show ONLY budget overrun PRs.
+    3. Excludes normal/within-budget pending requisitions.
+    """
+    env = setup_approver_env
+    today = timezone.now().date()
+
+    # Budget has only 100 available
+    Budget.objects.create(
+        cost_center=env["cc"],
+        fiscal_period=env["fp"],
+        allocated_amount=Decimal("100.00"),
+        reserved_amount=Decimal("0.00"),
+        committed_amount=Decimal("0.00"),
+        actual_amount=Decimal("0.00"),
+    )
+
+    # Normal PR within budget (amount = 50 <= available 100)
+    normal_pr = PurchaseRequisition.objects.create(
+        requester=env["requester"],
+        department=env["dept"],
+        cost_center=env["cc"],
+        title="Normal Office Supplies",
+        status=PurchaseRequisition.STATUS_MANAGER_REVIEW,
+        pr_number="PR-NORMAL-001",
+        total_amount=Decimal("50.00"),
+        requested_delivery_date=today,
+    )
+
+    # Overrun PR that exceeds budget (amount = 500 > available 100)
+    overrun_pr = PurchaseRequisition.objects.create(
+        requester=env["requester"],
+        department=env["dept"],
+        cost_center=env["cc"],
+        title="High Value Server Cluster",
+        status=PurchaseRequisition.STATUS_MANAGER_REVIEW,
+        pr_number="PR-OVERRUN-001",
+        total_amount=Decimal("500.00"),
+        requested_delivery_date=today,
+    )
+
+    # Another explicit STATUS_BUDGET_REVIEW PR
+    budget_review_pr = PurchaseRequisition.objects.create(
+        requester=env["requester"],
+        department=env["dept"],
+        cost_center=env["cc"],
+        title="Exception Budget Hardware",
+        status=PurchaseRequisition.STATUS_BUDGET_REVIEW,
+        pr_number="PR-BUDGET-EXC-002",
+        total_amount=Decimal("150.00"),
+        requested_delivery_date=today,
+    )
+
+    client.force_login(env["approver"])
+
+    # 1. Department approver dashboard shows "View Overrun PRs" linking to /approvals/inbox/?status=BUDGET_REVIEW
+    dash_resp = client.get("/approver/")
+    assert dash_resp.status_code == 200
+    dash_html = dash_resp.content.decode("utf-8")
+    assert 'href="/approvals/inbox/?status=BUDGET_REVIEW"' in dash_html
+    assert "View Overrun PRs" in dash_html
+
+    # 2. General inbox without filter displays all pending PRs
+    inbox_all = client.get("/approvals/inbox/?status=PENDING")
+    assert inbox_all.status_code == 200
+    all_html = inbox_all.content.decode("utf-8")
+    assert "PR-NORMAL-001" in all_html
+    assert "PR-OVERRUN-001" in all_html
+    assert "PR-BUDGET-EXC-002" in all_html
+
+    # 3. Clicking "View Overrun PRs" (/approvals/inbox/?status=BUDGET_REVIEW)
+    # MUST show ONLY the overrun and budget review PRs, excluding the normal PR!
+    inbox_overrun = client.get("/approvals/inbox/?status=BUDGET_REVIEW")
+    assert inbox_overrun.status_code == 200
+    overrun_html = inbox_overrun.content.decode("utf-8")
+
+    assert inbox_overrun.context["status_filter"] == "BUDGET_REVIEW"
+    assert '<option value="BUDGET_REVIEW" selected>Budget Review</option>' in overrun_html
+
+    # Only overrun and budget review PRs present
+    assert "PR-OVERRUN-001" in overrun_html
+    assert "PR-BUDGET-EXC-002" in overrun_html
+    # Normal PR MUST NOT be present
+    assert "PR-NORMAL-001" not in overrun_html
+
+    # 4. Same behavior with ?overrun=1
+    inbox_overrun_param = client.get("/approvals/inbox/?overrun=1")
+    assert inbox_overrun_param.status_code == 200
+    param_html = inbox_overrun_param.content.decode("utf-8")
+    assert "PR-OVERRUN-001" in param_html
+    assert "PR-BUDGET-EXC-002" in param_html
+    assert "PR-NORMAL-001" not in param_html
+
+
+
 
 
