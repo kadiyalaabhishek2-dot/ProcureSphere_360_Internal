@@ -719,31 +719,66 @@ document.addEventListener('DOMContentLoaded', function () {
         let isInternalNavigation = false;
 
         // Track internal page navigation to distinguish from exiting to browser homepage
-        document.addEventListener('click', function (e) {
-            const link = e.target.closest('a');
+        function markInternalNav(target) {
+            const link = target && target.closest ? target.closest('a') : null;
             if (link && link.href) {
                 try {
                     const url = new URL(link.href, window.location.origin);
-                    if (url.origin === window.location.origin && !link.getAttribute('href').startsWith('#')) {
+                    const hrefAttr = link.getAttribute('href') || '';
+                    if (url.origin === window.location.origin && !hrefAttr.startsWith('#') && !hrefAttr.startsWith('javascript:')) {
                         isInternalNavigation = true;
-                        setTimeout(function () { isInternalNavigation = false; }, 4000);
+                        try { sessionStorage.setItem('ps_is_internal_navigation', 'true'); } catch (err) {}
+                        setTimeout(function () {
+                            isInternalNavigation = false;
+                            try { sessionStorage.removeItem('ps_is_internal_navigation'); } catch (err) {}
+                        }, 60000);
                     }
                 } catch (err) {}
             }
-        }, true);
+        }
+
+        ['click', 'pointerdown', 'mousedown'].forEach(function (evtName) {
+            document.addEventListener(evtName, function (e) {
+                markInternalNav(e.target);
+            }, true);
+        });
 
         document.addEventListener('submit', function () {
             isInternalNavigation = true;
-            setTimeout(function () { isInternalNavigation = false; }, 4000);
+            try { sessionStorage.setItem('ps_is_internal_navigation', 'true'); } catch (err) {}
+            setTimeout(function () {
+                isInternalNavigation = false;
+                try { sessionStorage.removeItem('ps_is_internal_navigation'); } catch (err) {}
+            }, 60000);
         }, true);
 
         document.addEventListener('htmx:configRequest', function () {
             isInternalNavigation = true;
-            setTimeout(function () { isInternalNavigation = false; }, 4000);
+            try { sessionStorage.setItem('ps_is_internal_navigation', 'true'); } catch (err) {}
+            setTimeout(function () {
+                isInternalNavigation = false;
+                try { sessionStorage.removeItem('ps_is_internal_navigation'); } catch (err) {}
+            }, 60000);
         });
 
         // When user backs out or exits from dashboard root to browser homepage (e.g. Chrome newtab), auto-signout
         function handleDashboardExit() {
+            if (isInternalNavigation) return;
+            try {
+                if (sessionStorage.getItem('ps_is_internal_navigation') === 'true') return;
+            } catch (e) {}
+            try {
+                const activeEl = document.activeElement;
+                const activeA = activeEl && activeEl.closest ? activeEl.closest('a') : null;
+                if (activeA && activeA.href) {
+                    const activeUrl = new URL(activeA.href, window.location.origin);
+                    const href = activeA.getAttribute('href') || '';
+                    if (activeUrl.origin === window.location.origin && !href.startsWith('#') && !href.startsWith('javascript:')) {
+                        return;
+                    }
+                }
+            } catch (actErr) {}
+
             if (isDashboardRoot(window.location.pathname) && !isInternalNavigation) {
                 markUserSignedOut();
             }
@@ -1057,6 +1092,89 @@ document.addEventListener('DOMContentLoaded', function () {
                 return;
             });
         }
+    })();
+
+    // =========================================================================
+    // Universal Enterprise Sidebar Scroll State Preservation Controller
+    // Preserves exact sidebar scroll position across page refreshes and navigations
+    // Ensures clicked sidebar link and active route stay locked in view without jumping to top
+    // =========================================================================
+    (function initSidebarScrollPreservation() {
+        function getSidebarScrollContainer() {
+            const scrollable = document.querySelector(
+                '.sa-nav-scroll, aside nav.overflow-y-auto, [id$="Sidebar"] nav.overflow-y-auto, [id$="Nav"].overflow-y-auto, aside nav, [id$="Sidebar"] nav, aside .offcanvas-body'
+            );
+            if (scrollable) return scrollable;
+            const aside = document.querySelector('aside.sa-sidebar-desktop, aside.enterprise-sidebar, [id$="Sidebar"], aside');
+            if (aside) {
+                return aside.querySelector('.sa-nav-scroll, nav, .overflow-y-auto, .offcanvas-body') || aside;
+            }
+            return null;
+        }
+
+        function restoreSidebarScroll() {
+            const el = getSidebarScrollContainer();
+            if (!el) return;
+
+            let targetScroll = null;
+            try {
+                const saved = sessionStorage.getItem('ps_sidebar_scroll_pos');
+                if (saved !== null && saved !== '') {
+                    const parsed = parseInt(saved, 10);
+                    if (!isNaN(parsed) && parsed >= 0) {
+                        targetScroll = parsed;
+                    }
+                }
+            } catch (e) {}
+
+            const apply = function () {
+                if (targetScroll !== null && targetScroll > 0) {
+                    el.scrollTop = targetScroll;
+                } else if (targetScroll === null) {
+                    try {
+                        const activeLink = el.querySelector(
+                            'a.active, a.active-nav-item, .sa-nav-link.active, .vendor-navlink.active-nav-item, .approver-navlink.active-nav-item'
+                        );
+                        if (activeLink) {
+                            const elRect = el.getBoundingClientRect();
+                            const linkRect = activeLink.getBoundingClientRect();
+                            if (linkRect.top < elRect.top || linkRect.bottom > elRect.bottom) {
+                                activeLink.scrollIntoView({ block: 'nearest', behavior: 'auto' });
+                            }
+                        }
+                    } catch (err) {}
+                }
+            };
+
+            apply();
+            requestAnimationFrame(apply);
+            setTimeout(apply, 30);
+            setTimeout(apply, 100);
+        }
+
+        restoreSidebarScroll();
+        window.addEventListener('pageshow', restoreSidebarScroll);
+
+        const sc = getSidebarScrollContainer();
+        if (sc) {
+            sc.addEventListener('scroll', function () {
+                try {
+                    sessionStorage.setItem('ps_sidebar_scroll_pos', String(sc.scrollTop));
+                } catch (e) {}
+            }, { passive: true });
+        }
+
+        document.addEventListener('click', function (e) {
+            const link = e.target.closest('aside a, [id$="Sidebar"] a, .sa-nav-link, .vendor-navlink, .approver-navlink, .manager-nav-link');
+            if (link) {
+                const container = getSidebarScrollContainer();
+                if (container && container.scrollTop >= 0) {
+                    try {
+                        sessionStorage.setItem('ps_sidebar_scroll_pos', String(container.scrollTop));
+                    } catch (err) {}
+                }
+            }
+        }, true);
     })();
 });
 

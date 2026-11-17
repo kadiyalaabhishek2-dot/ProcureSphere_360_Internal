@@ -32,7 +32,13 @@
         // Forward navigation & bfcache anti-tamper guard: if user backed out / exited, block dashboard restoration
         (function() {
             try {
-                if (sessionStorage.getItem('ps360_user_signed_out') === 'true' ||
+                if (sessionStorage.getItem('ps_is_internal_navigation') === 'true') {
+                    sessionStorage.removeItem('ps_is_internal_navigation');
+                    sessionStorage.removeItem('ps360_user_signed_out');
+                    localStorage.removeItem('ps360_user_signed_out');
+                    document.cookie = "ps360_user_signed_out=; path=/; max-age=0";
+                    document.cookie = "ps360_just_logged_out=; path=/; max-age=0";
+                } else if (sessionStorage.getItem('ps360_user_signed_out') === 'true' ||
                     localStorage.getItem('ps360_user_signed_out') ||
                     document.cookie.indexOf('ps360_user_signed_out=1') !== -1) {
                     window.location.replace('/login/?reason=signed_out');
@@ -1418,7 +1424,7 @@
     <!-- Bootstrap JS Bundle -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     <!-- Custom Application JS -->
-    <script src="/static/js/app.js?v=ps_nav_v16"></script>
+    <script src="/static/js/app.js?v=ps_nav_v17"></script>
     {% if request.user.is_authenticated %}
     <script>
       window.PS360_SESSION_CONFIG = {
@@ -1608,10 +1614,89 @@
         document.addEventListener('DOMContentLoaded', initSidebarToggle);
         document.body.addEventListener('htmx:afterSettle', initSidebarToggle);
 
-        // Instant visual feedback for clicked sidebar menu item
+        // Universal Sidebar Scroll State Preservation Controller
+        function getSidebarScrollContainer() {
+            const scrollable = document.querySelector(
+                '.sa-nav-scroll, aside nav.overflow-y-auto, [id$="Sidebar"] nav.overflow-y-auto, [id$="Nav"].overflow-y-auto, aside nav, [id$="Sidebar"] nav, aside .offcanvas-body'
+            );
+            if (scrollable) return scrollable;
+            const aside = document.querySelector('aside.sa-sidebar-desktop, aside.enterprise-sidebar, [id$="Sidebar"], aside');
+            if (aside) {
+                return aside.querySelector('.sa-nav-scroll, nav, .overflow-y-auto, .offcanvas-body') || aside;
+            }
+            return null;
+        }
+
+        function restoreSidebarScrollState() {
+            const el = getSidebarScrollContainer();
+            if (!el) return;
+
+            let targetScroll = null;
+            try {
+                const saved = sessionStorage.getItem('ps_sidebar_scroll_pos');
+                if (saved !== null && saved !== '') {
+                    const parsed = parseInt(saved, 10);
+                    if (!isNaN(parsed) && parsed >= 0) {
+                        targetScroll = parsed;
+                    }
+                }
+            } catch (e) {}
+
+            const apply = function() {
+                if (targetScroll !== null && targetScroll > 0) {
+                    el.scrollTop = targetScroll;
+                } else if (targetScroll === null) {
+                    try {
+                        const activeLink = el.querySelector(
+                            'a.active, a.active-nav-item, .sa-nav-link.active, .vendor-navlink.active-nav-item, .approver-navlink.active-nav-item'
+                        );
+                        if (activeLink) {
+                            const elRect = el.getBoundingClientRect();
+                            const linkRect = activeLink.getBoundingClientRect();
+                            if (linkRect.top < elRect.top || linkRect.bottom > elRect.bottom) {
+                                activeLink.scrollIntoView({ block: 'nearest', behavior: 'auto' });
+                            }
+                        }
+                    } catch (err) {}
+                }
+            };
+
+            apply();
+            requestAnimationFrame(apply);
+            setTimeout(apply, 30);
+            setTimeout(apply, 100);
+        }
+
+        function bindSidebarScrollTracking() {
+            const el = getSidebarScrollContainer();
+            if (!el || el._psScrollTracked) return;
+            el._psScrollTracked = true;
+            el.addEventListener('scroll', function() {
+                try {
+                    sessionStorage.setItem('ps_sidebar_scroll_pos', String(el.scrollTop));
+                } catch (e) {}
+            }, { passive: true });
+        }
+
+        // Restore immediately and bind tracking
+        restoreSidebarScrollState();
+        bindSidebarScrollTracking();
+        document.addEventListener('DOMContentLoaded', function() {
+            restoreSidebarScrollState();
+            bindSidebarScrollTracking();
+        });
+        window.addEventListener('pageshow', restoreSidebarScrollState);
+
+        // Instant visual feedback for clicked sidebar menu item & preserve scroll position
         document.addEventListener('click', function(e) {
             const link = e.target.closest('aside nav a, aside .sidebar-nav-container a, [id$="Sidebar"] nav a, [id$="Nav"] a, .sa-nav-link, .vendor-navlink, .unified-navlink, .finance-navlink, .proc-navlink, .req-navlink, .manager-nav-link');
             if (link && !link.getAttribute('href')?.startsWith('#') && link.getAttribute('href') !== '/logout/') {
+                const sc = getSidebarScrollContainer();
+                if (sc && sc.scrollTop >= 0) {
+                    try {
+                        sessionStorage.setItem('ps_sidebar_scroll_pos', String(sc.scrollTop));
+                    } catch (err) {}
+                }
                 const nav = link.closest('nav, aside, [id$="Sidebar"]');
                 if (nav) {
                     nav.querySelectorAll('a.active, a.active-nav-item').forEach(el => {
