@@ -757,6 +757,7 @@ def detail_view(request, pk):
             .first()
         )
     available_budget = active_budget.available_amount if active_budget else None
+    allow_overspend = bool(active_budget.allow_overspend) if active_budget else False
     is_pending_review = pr.status in [
         PurchaseRequisition.STATUS_DRAFT,
         PurchaseRequisition.STATUS_SUBMITTED,
@@ -769,6 +770,12 @@ def detail_view(request, pk):
             pr.status == PurchaseRequisition.STATUS_BUDGET_REVIEW
             or (available_budget is not None and (available_budget <= 0 or pr.total_amount > available_budget))
         )
+    )
+    budget_overspend_blocked = bool(
+        pr.status == PurchaseRequisition.STATUS_BUDGET_REVIEW
+        and not allow_overspend
+        and available_budget is not None
+        and pr.total_amount > available_budget
     )
 
     from apps.approvals.models import ApprovalPolicy
@@ -838,12 +845,16 @@ def detail_view(request, pk):
             can_approve = not user_has_approved
     elif pr.status == PurchaseRequisition.STATUS_BUDGET_REVIEW:
         if role_code in [Role.FINANCE_AP, Role.SUPER_ADMIN] or user.is_superuser:
-            can_approve = True
+            can_approve = not budget_overspend_blocked
+        elif role_code in [Role.PROC_MGR, "PROC_MGR"]:
+            can_approve = False
 
     can_reject = False
     if role_code in [Role.PROC_MGR, "PROC_MGR"] and not user.is_superuser:
         can_approve = False
         can_reject = bool(is_budget_exceeded or pr.status == PurchaseRequisition.STATUS_BUDGET_REVIEW)
+    elif pr.status == PurchaseRequisition.STATUS_BUDGET_REVIEW and (role_code in [Role.FINANCE_AP, Role.SUPER_ADMIN] or user.is_superuser):
+        can_reject = True
     else:
         can_reject = can_approve
 
@@ -861,6 +872,8 @@ def detail_view(request, pk):
             "approval_history": approval_history,
             "available_budget": available_budget,
             "is_budget_exceeded": is_budget_exceeded,
+            "budget_overspend_blocked": budget_overspend_blocked,
+            "allow_overspend": allow_overspend,
             "base_layout": base_layout,
             "can_approve": can_approve,
             "can_reject": can_reject,
@@ -982,8 +995,12 @@ def approve_view(request, pk):
                 target_object=pr, actor=request.user, action="APPROVED", comments=comments
             )
             messages.success(request, f"Requisition {pr.pr_number} approved successfully!")
+        except ValidationError as ve:
+            err_msg = ve.messages[0] if hasattr(ve, "messages") and ve.messages else (ve.message if hasattr(ve, "message") else str(ve).strip("[]'\""))
+            messages.error(request, f"Approval blocked: {err_msg}")
         except Exception as e:
-            messages.error(request, f"Approval error: {str(e)}")
+            err_msg = str(e).strip("[]'\"")
+            messages.error(request, f"Approval error: {err_msg}")
     referer = request.META.get("HTTP_REFERER")
     if referer:
         return redirect(referer)

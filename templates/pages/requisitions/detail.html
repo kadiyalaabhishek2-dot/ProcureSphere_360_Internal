@@ -91,6 +91,19 @@
                 </button>
             </form>
             {% endif %}
+        {% elif budget_overspend_blocked and can_reject %}
+            <span class="d-inline-flex gap-2 flex-grow-1 flex-md-grow-0" data-bs-toggle="tooltip" title="Budget overspend is disabled for Cost Center {{ pr.cost_center.code }} (Hard Budget Stop). Either top up budget in Budget Overview or reject this exception.">
+                <button type="button" class="btn btn-secondary rounded-pill shadow-sm px-4 fw-bold text-dark w-100 opacity-50" disabled style="cursor: not-allowed;">
+                    <i class="fa-solid fa-ban me-2 text-danger"></i>Overspend Blocked
+                </button>
+            </span>
+            <form method="POST" action="{% url 'requisition_reject' pr.pk %}" class="d-inline-flex gap-2 flex-grow-1 flex-md-grow-0" onsubmit="this.querySelector('input[name=comments]').value = (document.getElementById('decisionCommentsSidebarBudget')?.value || 'Budget Rejected').trim()">
+                {% csrf_token %}
+                <input type="hidden" name="comments" value="Budget Rejected">
+                <button type="submit" class="btn btn-danger rounded-pill shadow-sm px-4 fw-bold w-100">
+                    <i class="fa-solid fa-times me-2"></i>Reject Exception
+                </button>
+            </form>
         {% elif can_reject %}
             <form method="POST" action="{% url 'requisition_reject' pr.pk %}" class="d-inline-flex gap-2 flex-grow-1 flex-md-grow-0" onsubmit="this.querySelector('input[name=comments]').value = (document.getElementById('decisionCommentsSidebar')?.value || 'Budget Overrun Rejected').trim()">
                 {% csrf_token %}
@@ -140,10 +153,17 @@
             {% if role_code != 'REQUESTER' and available_budget != None %}(<strong>₹{{ available_budget|floatformat:2 }}</strong> remaining){% endif %}
             for Cost Center <strong>{{ pr.cost_center.code }} - {{ pr.cost_center.name }}</strong>.
         </p>
+        {% if budget_overspend_blocked %}
+        <div class="mt-2 p-2.5 bg-danger bg-opacity-10 rounded-3 border border-danger border-opacity-25 text-danger small">
+            <i class="fa-solid fa-ban me-1 fw-bold"></i>
+            <strong>Hard Budget Stop Active:</strong> Cost Center <strong>{{ pr.cost_center.code }}</strong> has overspend disabled (<code>allow_overspend = False</code>). Approval is blocked by financial governance policy. To proceed, you must either <strong>Reject Exception</strong> or allocate additional funds under Budget Overview.
+        </div>
+        {% else %}
         <div class="small text-muted">
-            <i class="fa-solid fa-shield-halved me-1 text-danger"></i> Requires Procurement Manager budget exception approval
+            <i class="fa-solid fa-shield-halved me-1 text-danger"></i> Requires Procurement Manager or Finance AP budget exception approval
             before proceeding.
         </div>
+        {% endif %}
     </div>
 </div>
 {% endif %}
@@ -661,6 +681,20 @@
                 </div>
             </div>
             {% endif %}
+        {% elif budget_overspend_blocked and can_reject %}
+            <div id="approvalActionDecision" class="card border-danger border-2 shadow-sm rounded-4 mb-4 bg-danger bg-opacity-10">
+                <div class="card-body p-4">
+                    <h6 class="fw-bold text-danger mb-2">
+                        <i class="fa-solid fa-ban text-danger me-2"></i>Hard Budget Stop Active
+                    </h6>
+                    <p class="small text-muted mb-3">Cost Center <strong>{{ pr.cost_center.code }}</strong> has overspend disabled (<code>allow_overspend = False</code>). Approval is prohibited. Enter rejection remarks below.</p>
+                    <div class="mb-0">
+                        <label for="decisionCommentsSidebarBudget" class="form-label small fw-semibold text-dark">Rejection Justification</label>
+                        <textarea id="decisionCommentsSidebarBudget" name="comments" class="form-control form-control-sm bg-white" rows="3"
+                            placeholder="Reason for rejecting this over-budget requisition..."></textarea>
+                    </div>
+                </div>
+            </div>
         {% elif can_reject %}
             <div id="approvalActionDecision" class="card border-danger border-2 shadow-sm rounded-4 mb-4 bg-danger bg-opacity-10">
                 <div class="card-body p-4">
