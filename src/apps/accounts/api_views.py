@@ -217,7 +217,7 @@ class SessionLoginView(views.APIView):
             user_agent=request.META.get("HTTP_USER_AGENT", ""),
         )
 
-        return Response(
+        resp = Response(
             {
                 "message": "Login successful.",
                 "user": serializer.data,
@@ -225,6 +225,9 @@ class SessionLoginView(views.APIView):
             },
             status=status.HTTP_200_OK,
         )
+        resp.delete_cookie("ps360_just_logged_out")
+        resp.delete_cookie("ps360_user_signed_out")
+        return resp
 
 
 class SessionLogoutView(views.APIView):
@@ -424,9 +427,9 @@ class UserViewSet(viewsets.ModelViewSet):
         role_code = getattr(user, "role_code", None) or (
             user.role.code if getattr(user, "role", None) else None
         )
-        if user.is_superuser or role_code in [Role.SUPER_ADMIN, Role.AUDITOR]:
-            return get_all_users()
-        return User.objects.filter(id=user.id)
+        if user.is_superuser or role_code == Role.SUPER_ADMIN:
+            return get_all_users().order_by("email", "id")
+        return User.objects.filter(id=user.id).order_by("id")
 
     def perform_create(self, serializer):
         user = serializer.save()
