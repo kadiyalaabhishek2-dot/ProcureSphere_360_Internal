@@ -300,6 +300,21 @@ class DepartmentApproverQueueAPIView(APIView):
 
         results = []
         for pr in prs_qs:
+            currency = getattr(pr, "currency", None)
+            if not currency:
+                from apps.approvals.models import ApprovalPolicy
+                policy = ApprovalPolicy.objects.filter(
+                    module=ApprovalPolicy.MODULE_PR,
+                    is_active=True,
+                ).filter(
+                    Q(all_departments=True) | Q(department=pr.department)
+                ).first()
+                currency = policy.currency if policy and policy.currency else "USD"
+
+            urgency = getattr(pr, "urgency", None)
+            if not urgency:
+                urgency = "HIGH" if getattr(pr, "total_amount", Decimal("0.00")) > Decimal("50000.00") else "NORMAL"
+
             results.append({
                 "id": pr.id,
                 "pr_number": pr.pr_number,
@@ -308,10 +323,10 @@ class DepartmentApproverQueueAPIView(APIView):
                 "department_name": pr.department.name if pr.department else "Unassigned",
                 "cost_center_code": pr.cost_center.code if pr.cost_center else None,
                 "total_amount": pr.total_amount,
-                "currency": getattr(pr, "currency", "USD"),
+                "currency": currency,
                 "status": pr.status,
                 "created_at": pr.created_at,
-                "urgency": getattr(pr, "urgency", "MEDIUM"),
+                "urgency": urgency,
             })
         return Response(results, status=status.HTTP_200_OK)
 
