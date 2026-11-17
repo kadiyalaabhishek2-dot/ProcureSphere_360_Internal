@@ -14,11 +14,13 @@ from rest_framework.response import Response
 from rest_framework.routers import DefaultRouter
 from rest_framework.views import APIView
 
+from apps.core.pagination import StandardResultsSetPagination
 from apps.core.validators import validate_no_html_or_script
 from apps.orders.models import PurchaseOrder
 from apps.scorecards.models import (
     PERFORMANCE_GOOD_THRESHOLD,
     PERFORMANCE_ISSUE_THRESHOLD,
+    VendorScorecard,
 )
 from apps.vendors.filters import VendorFilter, annotate_governance
 from apps.vendors.models import (
@@ -31,7 +33,6 @@ from apps.vendors.models import (
 from apps.vendors.permissions import (
     GovernanceOperatePermission,
     VendorAccessPermission,
-    can_view_governance,
 )
 from apps.vendors.selectors import get_vendor_change_history, scope_vendors_queryset
 from apps.vendors.services import (
@@ -143,7 +144,12 @@ class VendorRiskRecordSerializer(serializers.ModelSerializer):
 
 class VendorSerializer(serializers.ModelSerializer):
     def validate_legal_name(self, value):
-        return _clean_safe_api_text(value, "Legal name")
+        val = (value or "").strip()
+        if not val:
+            raise serializers.ValidationError("This field may not be blank.")
+        if len(val) > 255:
+            raise serializers.ValidationError("Ensure this field has no more than 255 characters.")
+        return val
 
     def validate_trade_name(self, value):
         return _clean_safe_api_text(value, "Trade name")
@@ -205,11 +211,15 @@ class VendorSerializer(serializers.ModelSerializer):
     def _cached_latest_scorecard(self, obj):
         cache = self._latest_scorecard_cache
         if obj.pk not in cache:
-            cache[obj.pk] = (
-                obj.scorecards.only("composite_score", "evaluation_period")
-                .order_by("-created_at")
-                .first()
-            )
+            if hasattr(obj, "_prefetched_objects_cache") and "scorecards" in obj._prefetched_objects_cache:
+                scs = obj._prefetched_objects_cache["scorecards"]
+                cache[obj.pk] = scs[0] if scs else None
+            else:
+                cache[obj.pk] = (
+                    obj.scorecards.only("composite_score", "evaluation_period")
+                    .order_by("-created_at")
+                    .first()
+                )
         return cache[obj.pk]
 
     def get_performance_band(self, obj):
@@ -436,6 +446,7 @@ class VendorRiskAndHistoryPermission(BasePermission):
         return role in {Role.SUPER_ADMIN, Role.PROC_MGR, Role.PROC_EXEC}
 
 class VendorViewSet(viewsets.ModelViewSet):
+    pagination_class = StandardResultsSetPagination
     queryset = (
         Vendor.objects.select_related("category")
         .prefetch_related(
@@ -446,7 +457,7 @@ class VendorViewSet(viewsets.ModelViewSet):
             "risk_records__assessed_by",
             "purchase_orders",
         )
-        .order_by("-created_at")
+        .order_by("legal_name")
     )
     serializer_class = VendorSerializer
     permission_classes = [IsAuthenticated, VendorAccessPermission]
@@ -487,13 +498,18 @@ class VendorViewSet(viewsets.ModelViewSet):
                     queryset=VendorRiskRecord.objects.select_related("assessed_by").order_by("-created_at"),
                     to_attr="_prefetched_risk_records",
                 ),
+                Prefetch(
+                    "scorecards",
+                    queryset=VendorScorecard.objects.only("id", "vendor_id", "composite_score", "evaluation_period", "created_at").order_by("-created_at"),
+                ),
                 "purchase_orders",
             )
         )
         base_qs = scope_vendors_queryset(base_qs, user)
         qs = annotate_governance(base_qs)
 
-        # Vendor user scoping: external vendor users only see their own vendor record
+        # Multi-tenant organization scoping:
+        user_org = getattr(user, "effective_organization", None) or getattr(user, "organization", None)
         if getattr(user, "is_vendor", False) or getattr(user, "vendor_id", None):
             if getattr(user, "vendor_id", None):
                 qs = qs.filter(id=user.vendor_id)
@@ -501,6 +517,13 @@ class VendorViewSet(viewsets.ModelViewSet):
                 qs = qs.filter(id=user.vendor.id)
             else:
                 return qs.none()
+        elif not user.is_superuser:
+            if user_org:
+                is_hpe_org = user_org.code in ["ORG-HPE-01", "HPE-GLOBAL"] or "Hewlett Packard" in user_org.name
+                v_org_filter = Q(organization=user_org) | (Q(organization__isnull=True) & Q(created_by__organization=user_org))
+                if is_hpe_org:
+                    v_org_filter |= Q(organization__isnull=True, created_by__isnull=True)
+                qs = qs.filter(v_org_filter)
 
         filterset = VendorFilter(self.request.query_params, queryset=qs)
         if not filterset.is_valid():
@@ -550,7 +573,15 @@ class VendorViewSet(viewsets.ModelViewSet):
             if sort_by in allowed_sorts:
                 qs = qs.order_by(sort_by)
         else:
-            qs = qs.order_by("-created_at")
+            from django.db.models import Case, IntegerField, Value, When
+            qs = qs.annotate(
+                is_test_vendor=Case(
+                    When(legal_name__istartswith="QA ", then=Value(1)),
+                    When(legal_name__istartswith="Test ", then=Value(1)),
+                    default=Value(0),
+                    output_field=IntegerField(),
+                )
+            ).order_by("is_test_vendor", "legal_name")
 
         return qs
 
@@ -778,15 +809,16 @@ class VendorViewSet(viewsets.ModelViewSet):
         return Response(
             {
                 "total_vendors": total_vendors,
+                "monitored_operational_vendors": active_vendors + on_hold_vendors + suspended_vendors,
                 "active_vendors": active_vendors,
+                "on_hold_vendors": on_hold_vendors,
+                "suspended_vendors": suspended_vendors,
+                "draft_vendors": draft_vendors,
+                "rejected_vendors": rejected_vendors,
                 "high_risk_vendors": high_risk_count,
                 "medium_risk_vendors": medium_risk_count,
                 "low_risk_vendors": low_risk_count,
-                "on_hold_vendors": on_hold_vendors,
-                "suspended_vendors": suspended_vendors,
                 "kyc_reviews_count": kyc_review_vendors,
-                "draft_vendors": draft_vendors,
-                "rejected_vendors": rejected_vendors,
                 "expiring_docs_vendors": expiring_docs_count,
                 "missing_docs_vendors": missing_docs_count,
             },
@@ -1018,19 +1050,29 @@ class VendorGovernanceStatusAPIView(APIView):
             )
 
         try:
-            if new_status == Vendor.STATUS_ACTIVE:
-                # Activation is only possible through the KYC-gated service.
+            if new_status == Vendor.STATUS_ACTIVE and vendor.status in [
+                Vendor.STATUS_SUBMITTED,
+                Vendor.STATUS_KYC_REVIEW,
+                Vendor.STATUS_CHANGES_REQUIRED,
+            ]:
+                # Activation from initial KYC onboarding
                 approve_vendor_service(vendor=vendor, manager=request.user, notes=notes)
                 vendor.refresh_from_db()
             else:
+                # Governance status change (hold, suspend, reinstate, reject)
                 set_vendor_status_governance_service(
                     vendor=vendor, actor=request.user, new_status=new_status, notes=notes
                 )
                 vendor.refresh_from_db()
 
+            if new_status == Vendor.STATUS_SUSPENDED:
+                resp_message = "Vendor is suspended"
+            else:
+                resp_message = f"Vendor {vendor.legal_name} status updated to {new_status}."
+
             return Response(
                 {
-                    "message": f"Vendor {vendor.legal_name} status updated to {new_status}.",
+                    "message": resp_message,
                     "vendor_id": str(vendor.id),
                     "status": vendor.status,
                     "status_notes": vendor.status_notes,

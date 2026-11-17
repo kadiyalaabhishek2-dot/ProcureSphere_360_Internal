@@ -18,13 +18,7 @@ from django.views.decorators.http import require_POST
 
 from apps.accounts.models import Role
 from apps.audit.models import AuditLog
-from apps.contracts.models import (
-    Contract,
-    ContractDocument,
-    ContractMilestone,
-    ContractObligation,
-    ContractVersion,
-)
+from apps.contracts.models import Contract
 from apps.invoices.models import InvoiceLine, PaymentStatus, SupplierInvoice
 from apps.invoices.services import create_supplier_invoice_service
 from apps.notifications.models import Notification
@@ -314,9 +308,9 @@ def vendor_profile_view(request):
                     files_to_process.append(("Other Document", other_file, other_type, other_title, other_expiry))
 
                 DISALLOWED_IMAGE_EXTENSIONS = {
-                    "png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "tiff", "ico", "avif", "heic", "heif"
+                    "gif", "webp", "bmp", "svg", "tiff", "ico", "avif", "heic", "heif"
                 }
-                SUPPORTED_DOCUMENT_EXTENSIONS = {"pdf", "doc", "docx", "xlsx", "csv"}
+                SUPPORTED_DOCUMENT_EXTENSIONS = {"pdf", "png", "jpg", "jpeg", "doc", "docx", "xlsx", "csv"}
                 MAX_FILE_SIZE = 10 * 1024 * 1024
 
                 validation_errors = []
@@ -324,20 +318,19 @@ def vendor_profile_view(request):
                     file_name = getattr(f, "name", "")
                     file_size = getattr(f, "size", 0) or 0
                     ext = os.path.splitext(file_name)[1][1:].lower() if "." in file_name else ""
-                    raw_content_type = (getattr(f, "content_type", "") or "").split(";")[0].strip().lower()
 
                     if file_size == 0:
                         validation_errors.append(f"{label}: Uploaded file '{file_name}' is empty (0 bytes).")
                     elif file_size > MAX_FILE_SIZE:
                         validation_errors.append(f"{label}: File '{file_name}' exceeds the maximum allowed limit of 10 MB.")
 
-                    if (ext in DISALLOWED_IMAGE_EXTENSIONS) or raw_content_type.startswith("image/"):
+                    if ext in DISALLOWED_IMAGE_EXTENSIONS:
                         validation_errors.append(
-                            f"{label}: Image files (.{ext or 'image'}) are strictly prohibited. Please upload a supported document format (PDF, DOC, DOCX, XLSX, CSV)."
+                            f"{label}: Image files (.{ext or 'image'}) are strictly prohibited. Please upload a supported document format (PDF, PNG, JPG, DOC, DOCX, XLSX, CSV)."
                         )
                     elif ext not in SUPPORTED_DOCUMENT_EXTENSIONS:
                         validation_errors.append(
-                            f"{label}: File extension '.{ext}' is not permitted. Only PDF, DOC, DOCX, XLSX, CSV are allowed."
+                            f"{label}: File extension '.{ext}' is not permitted. Only PDF, PNG, JPG, DOC, DOCX, XLSX, CSV are allowed."
                         )
 
                 if validation_errors:
@@ -388,23 +381,22 @@ def vendor_profile_view(request):
                     try:
                         file_name = getattr(doc_file, "name", "")
                         ext = os.path.splitext(file_name)[1][1:].lower() if "." in file_name else ""
-                        raw_content_type = (getattr(doc_file, "content_type", "") or "").split(";")[0].strip().lower()
 
                         DISALLOWED_IMAGE_EXTENSIONS = {
-                            "png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "tiff", "ico", "avif", "heic", "heif"
+                            "gif", "webp", "bmp", "svg", "tiff", "ico", "avif", "heic", "heif"
                         }
-                        SUPPORTED_DOCUMENT_EXTENSIONS = {"pdf", "doc", "docx", "xlsx", "csv"}
+                        SUPPORTED_DOCUMENT_EXTENSIONS = {"pdf", "png", "jpg", "jpeg", "doc", "docx", "xlsx", "csv"}
 
-                        if (ext in DISALLOWED_IMAGE_EXTENSIONS) or raw_content_type.startswith("image/"):
+                        if ext in DISALLOWED_IMAGE_EXTENSIONS:
                             raise ValidationError(
                                 f"Image file format (.{ext or 'image'}) is strictly prohibited. "
-                                "Please upload a supported document format (PDF, DOC, DOCX, XLSX, CSV)."
+                                "Please upload a supported document format (PDF, PNG, JPG, DOC, DOCX, XLSX, CSV)."
                             )
 
                         if ext not in SUPPORTED_DOCUMENT_EXTENSIONS:
                             raise ValidationError(
                                 f"File extension '.{ext}' is not permitted. "
-                                "Please upload a supported document file (PDF, DOC, DOCX, XLSX, CSV)."
+                                "Please upload a supported document file (PDF, PNG, JPG, DOC, DOCX, XLSX, CSV)."
                             )
 
                         upload_vendor_document_service(
@@ -638,6 +630,10 @@ def vendor_sourcing_list_view(request):
         .select_related("event", "event__requisition", "event__requisition__department")
         .order_by("-event__created_at")
     )
+
+    # Suspended vendors are blocked from receiving or participating in active RFP/RFQ events
+    if vendor.status == Vendor.STATUS_SUSPENDED:
+        invites_qs = invites_qs.filter(is_responded=True)
 
     if query:
         invites_qs = invites_qs.filter(
@@ -1628,7 +1624,7 @@ def vendor_purchase_order_detail_view(request, po_id):
             "Access Denied: You do not have authorization to view this purchase order."
         )
 
-    can_acknowledge = po.status == PurchaseOrder.STATUS_ISSUED
+    can_acknowledge = (po.status == PurchaseOrder.STATUS_ISSUED) and (vendor.status != Vendor.STATUS_SUSPENDED)
 
     # Calculate total accepted GRN quantity across all receipt lines for this PO
     all_receipt_lines = [rl for r in po.receipts.all() for rl in r.lines.all()]

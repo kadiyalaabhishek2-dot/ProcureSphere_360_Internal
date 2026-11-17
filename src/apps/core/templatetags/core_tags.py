@@ -124,10 +124,42 @@ def format_audit_state(state, log=None):
             try:
                 state = json.loads(state_str)
             except Exception:
-                pass
+                try:
+                    import ast
+                    state = ast.literal_eval(state_str)
+                except Exception:
+                    pass
 
     if not isinstance(state, dict):
         return mark_safe(escape(str(state)))
+
+    # Status transition check within a single state payload (e.g., {'from_status': '...', 'to_status': '...'})
+    from_s = state.get("from_status") or state.get("previous_status") or state.get("old_status")
+    to_s = state.get("to_status") or state.get("new_status")
+    if from_s and to_s:
+        prev_lbl = _STATUS_LABELS.get(from_s, str(from_s).replace("_", " ").title())
+        curr_lbl = _STATUS_LABELS.get(to_s, str(to_s).replace("_", " ").title())
+        curr_badge_cls = _STATUS_BADGE_CLASSES.get(to_s, "bg-success-subtle text-success border border-success-subtle")
+        html = (
+            f'<span>Status changed from <span class="text-muted fw-semibold">{escape(prev_lbl)}</span> '
+            f'to <span class="badge {curr_badge_cls}">{escape(curr_lbl)}</span></span>'
+        )
+        note = state.get("reason") or state.get("notes") or state.get("comments") or state.get("justification")
+        if note:
+            html += f'<div class="small text-muted mt-1"><i class="fa-solid fa-quote-left text-muted me-1 small"></i>{escape(note)}</div>'
+        return mark_safe(html)
+    elif to_s:
+        curr_lbl = _STATUS_LABELS.get(to_s, str(to_s).replace("_", " ").title())
+        curr_badge_cls = _STATUS_BADGE_CLASSES.get(to_s, "bg-light text-dark border")
+        parts = [f'<span class="badge {curr_badge_cls}">{escape(curr_lbl)}</span>']
+        note = state.get("reason") or state.get("notes") or state.get("comments") or state.get("justification")
+        if note:
+            parts.append(f'<div class="small text-muted mt-1"><i class="fa-solid fa-quote-left text-muted me-1 small"></i>{escape(note)}</div>')
+        return mark_safe("".join(parts))
+    elif from_s:
+        prev_lbl = _STATUS_LABELS.get(from_s, str(from_s).replace("_", " ").title())
+        badge_cls = _STATUS_BADGE_CLASSES.get(from_s, "bg-light text-dark border")
+        return mark_safe(f'<span class="badge {badge_cls}">{escape(prev_lbl)}</span>')
 
     # Credentials event formatting
     event = state.get("event")
@@ -204,16 +236,29 @@ def format_audit_updated_state(log):
     prev_state = getattr(log, "previous_state", None)
     new_state = getattr(log, "new_state", None)
 
-    if isinstance(prev_state, str) and prev_state.strip().startswith("{"):
-        try:
-            prev_state = json.loads(prev_state)
-        except Exception:
-            pass
-    if isinstance(new_state, str) and new_state.strip().startswith("{"):
-        try:
-            new_state = json.loads(new_state)
-        except Exception:
-            pass
+    if isinstance(prev_state, str):
+        prev_str = prev_state.strip()
+        if (prev_str.startswith("{") and prev_str.endswith("}")) or (prev_str.startswith("[") and prev_str.endswith("]")):
+            try:
+                prev_state = json.loads(prev_str)
+            except Exception:
+                try:
+                    import ast
+                    prev_state = ast.literal_eval(prev_str)
+                except Exception:
+                    pass
+
+    if isinstance(new_state, str):
+        new_str = new_state.strip()
+        if (new_str.startswith("{") and new_str.endswith("}")) or (new_str.startswith("[") and new_str.endswith("]")):
+            try:
+                new_state = json.loads(new_str)
+            except Exception:
+                try:
+                    import ast
+                    new_state = ast.literal_eval(new_str)
+                except Exception:
+                    pass
 
     if new_state is None or new_state == "" or new_state == {}:
         return mark_safe('<span class="text-muted">—</span>')
@@ -240,22 +285,29 @@ def format_audit_updated_state(log):
             return mark_safe(f'<span class="text-danger fw-semibold">Delivery failed for <strong class="text-dark">{escape(login_id or "")}</strong>:</span> <span class="text-muted">{escape(err)}</span>')
 
         # Status transition check
-        if isinstance(prev_state, dict) and "status" in prev_state and "status" in new_state:
-            prev_status = prev_state.get("status")
-            curr_status = new_state.get("status")
-            if prev_status and curr_status and prev_status != curr_status:
-                prev_lbl = _STATUS_LABELS.get(prev_status, str(prev_status).replace("_", " ").title())
-                curr_lbl = _STATUS_LABELS.get(curr_status, str(curr_status).replace("_", " ").title())
-                curr_badge_cls = _STATUS_BADGE_CLASSES.get(curr_status, "bg-success-subtle text-success border border-success-subtle")
+        prev_status = None
+        curr_status = None
 
-                html = (
-                    f'<span>Status changed from <span class="text-muted fw-semibold">{escape(prev_lbl)}</span> '
-                    f'to <span class="badge {curr_badge_cls}">{escape(curr_lbl)}</span></span>'
-                )
-                reason = new_state.get("reason") or new_state.get("notes") or new_state.get("comments")
-                if reason:
-                    html += f'<div class="small text-muted mt-1"><i class="fa-solid fa-quote-left text-muted me-1 small"></i>{escape(reason)}</div>'
-                return mark_safe(html)
+        if isinstance(prev_state, dict):
+            prev_status = prev_state.get("status") or prev_state.get("from_status") or prev_state.get("previous_status")
+        if not prev_status:
+            prev_status = new_state.get("from_status") or new_state.get("previous_status") or new_state.get("old_status")
+
+        curr_status = new_state.get("status") or new_state.get("to_status") or new_state.get("new_status")
+
+        if prev_status and curr_status and prev_status != curr_status:
+            prev_lbl = _STATUS_LABELS.get(prev_status, str(prev_status).replace("_", " ").title())
+            curr_lbl = _STATUS_LABELS.get(curr_status, str(curr_status).replace("_", " ").title())
+            curr_badge_cls = _STATUS_BADGE_CLASSES.get(curr_status, "bg-success-subtle text-success border border-success-subtle")
+
+            html = (
+                f'<span>Status changed from <span class="text-muted fw-semibold">{escape(prev_lbl)}</span> '
+                f'to <span class="badge {curr_badge_cls}">{escape(curr_lbl)}</span></span>'
+            )
+            reason = new_state.get("reason") or new_state.get("notes") or new_state.get("comments") or new_state.get("justification")
+            if reason:
+                html += f'<div class="small text-muted mt-1"><i class="fa-solid fa-quote-left text-muted me-1 small"></i>{escape(reason)}</div>'
+            return mark_safe(html)
 
     return format_audit_state(new_state, log)
 

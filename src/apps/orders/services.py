@@ -208,6 +208,11 @@ def acknowledge_purchase_order_service(
             f"Cannot acknowledge PO in status '{po.status}'. Must be ISSUED."
         )
 
+    if po.vendor.status == Vendor.STATUS_SUSPENDED:
+        raise ValidationError(
+            f"Vendor '{po.vendor.legal_name}' is suspended and cannot receive or acknowledge purchase orders."
+        )
+
     if not (
         getattr(vendor_user, "is_superuser", False)
         or (getattr(vendor_user, "vendor_id", None) and po.vendor_id == vendor_user.vendor_id)

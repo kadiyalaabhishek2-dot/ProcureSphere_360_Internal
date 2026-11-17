@@ -177,11 +177,10 @@ def check_and_reserve_budget_service(
     amount = requisition.total_amount
     if amount > budget.available_amount and not force_overrun:
         if not budget.allow_overspend:
-            raise BudgetOverrunException(
-                f"Budget overspend is not permitted for Cost Center '{cost_center.code}'. "
-                f"Requested: ${amount:,.2f}, Available: ${budget.available_amount:,.2f}.",
-                budget=budget,
-                requested_amount=amount,
+            raise ValidationError(
+                f"Insufficient budget in Cost Center '{cost_center.code}'. "
+                f"Requested: ${amount:,.2f}, Available: ${budget.available_amount:,.2f}. "
+                f"Budget overspend is not permitted."
             )
         else:
             raise BudgetOverrunException(

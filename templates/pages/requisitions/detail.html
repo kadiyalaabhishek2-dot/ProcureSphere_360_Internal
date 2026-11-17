@@ -269,12 +269,21 @@
                 <span class="fw-bold small text-dark d-block">PO Issued</span>
                 <span class="badge bg-success-subtle text-success border border-success-subtle rounded-pill" style="font-size: 0.65rem;">PO Created</span>
                 {% elif pr.status == 'SOURCING' or latest_sourcing or pr.sourcing_events.exists %}
+                {% if latest_sourcing and latest_sourcing.status == 'CANCELLED' and not latest_sourcing.bids.exists %}
+                <div class="bg-secondary text-white rounded-circle d-flex align-items-center justify-content-center mx-auto mb-2 shadow-sm"
+                    style="width: 44px; height: 44px;">
+                    <i class="fa-solid fa-ban"></i>
+                </div>
+                <span class="fw-bold small text-dark d-block">No Bids</span>
+                <span class="badge bg-secondary-subtle text-secondary border border-secondary-subtle rounded-pill" style="font-size: 0.65rem;">No Bids Received</span>
+                {% else %}
                 <div class="bg-info text-white rounded-circle d-flex align-items-center justify-content-center mx-auto mb-2 shadow-sm"
                     style="width: 44px; height: 44px;">
                     <i class="fa-solid fa-gavel"></i>
                 </div>
                 <span class="fw-bold small text-dark d-block">In Sourcing</span>
                 <span class="badge bg-info-subtle text-info border border-info-subtle rounded-pill" style="font-size: 0.65rem;">RFQ Active</span>
+                {% endif %}
                 {% elif pr.status == 'APPROVED' %}
                 <div class="bg-primary text-white rounded-circle d-flex align-items-center justify-content-center mx-auto mb-2 shadow-sm"
                     style="width: 44px; height: 44px;">
@@ -418,6 +427,8 @@
                                 class="btn btn-sm btn-outline-secondary rounded-pill px-3 flex-fill flex-sm-grow-0 text-center"
                                 title="View {{ attachment.title }}"
                                 data-doc-title="{{ attachment.title }}"
+                                data-doc-ext="{{ attachment.file_extension|default:'' }}"
+                                data-doc-filename="{{ attachment.file.name|default:'' }}"
                                 data-doc-size="{{ attachment.file_size|filesizeformat }}"
                                 data-doc-date="{{ attachment.created_at|date:'M d, Y H:i' }}"
                                 data-doc-view-url="{% url 'requisition_attachment_download' pr.pk attachment.pk %}?action=view"
@@ -611,10 +622,17 @@
                         <span class="badge bg-info-subtle text-info border border-info-subtle rounded-pill px-2.5 py-1 small fw-semibold">
                             <i class="fa-solid fa-gavel me-1"></i> Sourcing Event
                         </span>
+                        {% if latest_sourcing.status == 'CANCELLED' and not latest_sourcing.bids.exists %}
+                        <span class="badge bg-secondary rounded-pill">Closed (No Bids)</span>
+                        {% else %}
                         <span class="badge bg-secondary rounded-pill">{{ latest_sourcing.get_status_display }}</span>
+                        {% endif %}
                     </div>
                     <div class="fw-bold font-monospace fs-6 mb-1">{{ latest_sourcing.event_number }}</div>
                     <div class="small text-muted mb-2">{{ latest_sourcing.title|truncatechars:40 }}</div>
+                    {% if latest_sourcing.status == 'CANCELLED' and not latest_sourcing.bids.exists %}
+                    <div class="small text-danger fw-semibold"><i class="fa-solid fa-triangle-exclamation me-1"></i>No bids were received during the sourcing window.</div>
+                    {% endif %}
                 </div>
                 {% endif %}
             </div>
@@ -886,16 +904,26 @@ function openPrDocPreview(btn) {
     const uploaded = btn.getAttribute("data-doc-date") || "";
     const viewUrl = btn.getAttribute("data-doc-view-url") || "#";
     const downloadUrl = btn.getAttribute("data-doc-download-url") || viewUrl;
+    const docExt = (btn.getAttribute("data-doc-ext") || "").toLowerCase().trim();
+    const filename = (btn.getAttribute("data-doc-filename") || "").toLowerCase().trim();
 
     document.getElementById("prDocPreviewTitle").textContent = title;
     document.getElementById("prDocPreviewMeta").textContent = [size, uploaded ? ("Uploaded " + uploaded) : ""].filter(Boolean).join(" • ");
     document.getElementById("prDocDownloadBtn").setAttribute("href", downloadUrl);
 
     const bodyEl = document.getElementById("prDocPreviewBody");
-    const ext = title.split(".").pop().toLowerCase();
-    if (["png", "jpg", "jpeg", "gif", "webp"].includes(ext)) {
-        bodyEl.innerHTML = `<div class="p-4 text-center"><img src="${viewUrl}" alt="" class="img-fluid rounded shadow-sm" style="max-height: 70vh;"></div>`;
-    } else if (["pdf", "txt", "csv"].includes(ext)) {
+    let ext = docExt;
+    if (!ext && filename.includes(".")) {
+        ext = filename.split(".").pop().toLowerCase();
+    }
+    if (!ext && title.includes(".")) {
+        ext = title.split(".").pop().toLowerCase();
+    }
+    if (!ext) ext = "pdf";
+
+    if (["png", "jpg", "jpeg", "gif", "webp", "svg"].includes(ext)) {
+        bodyEl.innerHTML = `<div class="p-4 text-center"><img src="${viewUrl}" alt="${title}" class="img-fluid rounded shadow-sm" style="max-height: 70vh;"></div>`;
+    } else if (["pdf", "txt", "csv", "log"].includes(ext)) {
         bodyEl.innerHTML = `<iframe src="${viewUrl}" title="${title}" class="w-100 border-0" style="height: 72vh;"></iframe>`;
     } else {
         bodyEl.innerHTML = `
@@ -909,7 +937,7 @@ function openPrDocPreview(btn) {
             </div>
         `;
     }
-    new bootstrap.Modal(document.getElementById("prDocumentPreviewModal")).show();
+    bootstrap.Modal.getOrCreateInstance(document.getElementById("prDocumentPreviewModal")).show();
 }
 </script>
 {% endblock %}

@@ -52,13 +52,9 @@ class CanManageSupplierInvoice(BasePermission):
             action = getattr(view, "action", "")
             if "exception" in basename or "exception" in action:
                 return False
-            if action == "create_invoice":
-                return False
-            if action in ["pay_invoice", "pay", "run_match", "run_3_way_match"]:
+            if action in ["create_invoice", "pay_invoice", "pay", "run_match", "run_3_way_match"]:
                 return False
             if request.method in SAFE_METHODS:
-                return True
-            if request.method == "POST" and basename == "invoice" and action in ["create", None]:
                 return True
             return False
 

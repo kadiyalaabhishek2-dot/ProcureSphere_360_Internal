@@ -40,8 +40,8 @@
             <i class="fa-solid fa-shield-halved fs-5"></i>
         </div>
         <div class="small">
-            <span class="fw-bold">Approval Oversight Mode:</span>
-            As Procurement Manager, you maintain enterprise visibility, SLA tracking, and aging metrics across all department approval queues. Requisitions and amendments must be authorized by designated Department and Financial Approvers.
+            <span class="fw-bold">Approval Oversight &amp; Governance Desk:</span>
+            As Procurement Manager, you maintain enterprise visibility, SLA tracking, and governance authority across department requisition and PO amendment approval queues.
         </div>
     </div>
 
@@ -536,11 +536,6 @@
         const reqText = document.getElementById('modalCommentsRequiredText');
 
         commentsInput.value = '';
-
-        if (itemType === 'PR' && action === 'APPROVE') {
-            showManagerToast('Procurement Managers maintain approval oversight only and have no authority to approve PRs.', 'warning');
-            return;
-        }
 
         if (action === 'APPROVE') {
             titleEl.textContent = `Authorize Approval — ${item.reference_number}`;
