@@ -152,11 +152,16 @@ class ExportJobViewSet(viewsets.ModelViewSet):
 
 
 @api_view(["GET"])
-@permission_classes([IsAuthenticated, IsNotVendorUser])
+@permission_classes([IsAuthenticated, CanViewSpendAnalytics])
 def dashboard_summary_view(request):
     """
     Executes executive procurement dashboard overview combining spend, PRs, POs, Invoices, Contracts.
+    Realized total_spend strictly aggregates paid supplier invoices (SupplierInvoice.STATUS_PAID).
+    Unpaid, pending, and exception invoices are distinguished into separate accounting metrics.
     """
+    from django.db.models import Q as _Q, Sum
+    from apps.budgets.models import SpendLedger
+    from apps.invoices.models import SupplierInvoice
     from apps.orders.models import PurchaseOrder
     from apps.orders.selectors import scope_purchase_orders_queryset
     from apps.requisitions.models import PurchaseRequisition
@@ -170,12 +175,62 @@ def dashboard_summary_view(request):
     contract_data = get_contract_expiry_report(user=request.user)
     scorecard_data = get_supplier_performance_report()
 
+    # Scope invoices and ledger to tenant for breakdown metrics
+    org = None
+    if not request.user.is_superuser:
+        org = getattr(request.user, "effective_organization", None) or getattr(request.user, "organization", None)
+
+    total_paid_spend = sum(
+        float(item.get("actual_spend") or item.get("actual") or 0.0) for item in spend_data
+    )
+
+    inv_qs = SupplierInvoice.objects.all()
+    ledger_qs = SpendLedger.objects.all()
+    if org:
+        inv_qs = inv_qs.filter(
+            _Q(po__cost_center__department__organization=org)
+            | _Q(po__requisition__department__organization=org)
+            | _Q(po__created_by__organization=org)
+            | _Q(vendor__organization=org)
+        ).distinct()
+        ledger_qs = ledger_qs.filter(
+            _Q(budget__cost_center__department__organization=org)
+            | _Q(budget__cost_center__department__isnull=True)
+        )
+
+    pending_invoices_spend = float(
+        inv_qs.filter(
+            status__in=[
+                SupplierInvoice.STATUS_RECEIVED,
+                SupplierInvoice.STATUS_VALIDATION,
+                SupplierInvoice.STATUS_MATCHING,
+                SupplierInvoice.STATUS_APPROVAL,
+                SupplierInvoice.STATUS_READY_FOR_PAYMENT,
+            ]
+        ).aggregate(s=Sum("total_amount"))["s"] or 0.0
+    )
+
+    exception_invoices_spend = float(
+        inv_qs.filter(status=SupplierInvoice.STATUS_EXCEPTION).aggregate(s=Sum("total_amount"))["s"] or 0.0
+    )
+
+    actual_ledger_spend = float(
+        ledger_qs.filter(entry_type=SpendLedger.ENTRY_ACTUAL).aggregate(s=Sum("amount"))["s"] or 0.0
+    )
+
+    committed_ledger_spend = float(
+        ledger_qs.filter(entry_type=SpendLedger.ENTRY_COMMITMENT).aggregate(s=Sum("amount"))["s"] or 0.0
+    )
+
     summary = {
         "total_prs": len(pr_data) if not request.user.is_superuser else PurchaseRequisition.objects.count(),
         "total_pos": scope_purchase_orders_queryset(PurchaseOrder.objects.all(), request.user).count(),
-        "total_spend": sum(
-            float(item.get("actual_spend") or item.get("actual") or 0.0) for item in spend_data
-        ),
+        "total_spend": total_paid_spend,
+        "paid_spend": total_paid_spend,
+        "pending_spend": pending_invoices_spend,
+        "exception_spend": exception_invoices_spend,
+        "actual_ledger_spend": actual_ledger_spend,
+        "committed_ledger_spend": committed_ledger_spend,
         "pending_exceptions": len([item for item in inv_data if item["status"] == "OPEN"]),
         "expiring_contracts": len(
             [item for item in contract_data if 0 <= item["days_to_expiry"] <= 60]
@@ -403,6 +458,7 @@ urlpatterns = [
     path("", reports_index_view, name="reports-index"),
 ] + router.urls + [
     path("dashboard-summary/", dashboard_summary_view, name="dashboard-summary"),
+    path("dashboard/summary/", dashboard_summary_view, name="dashboard-summary-alias"),
     path("pr-aging/", pr_aging_report_view, name="report-pr-aging"),
     path("spend-analytics/", spend_analytics_report_view, name="report-spend-analytics"),
     path("spend/", spend_analytics_report_view, name="report-spend-alias"),
