@@ -519,8 +519,10 @@ document.addEventListener('DOMContentLoaded', function () {
         try {
             sessionStorage.setItem('ps360_user_signed_out', 'true');
             localStorage.setItem('ps360_user_signed_out', String(Date.now()));
-            document.cookie = "ps360_just_logged_out=1; path=/; max-age=120; SameSite=Lax";
-            document.cookie = "ps360_user_signed_out=1; path=/; max-age=120; SameSite=Lax";
+            const isHttps = window.location.protocol === 'https:';
+            const secureFlag = isHttps ? '; Secure' : '';
+            document.cookie = "ps360_just_logged_out=1; path=/; max-age=300; SameSite=Lax" + secureFlag;
+            document.cookie = "ps360_user_signed_out=1; path=/; max-age=300; SameSite=Lax" + secureFlag;
             sessionStorage.removeItem('ps_portal_initialized');
             sessionStorage.removeItem('ps360_tab_session_id');
             localStorage.removeItem('ps360_active_session_id');
@@ -532,7 +534,8 @@ document.addEventListener('DOMContentLoaded', function () {
         // Send background beacon to immediately terminate session on server
         try {
             if (navigator.sendBeacon) {
-                navigator.sendBeacon('/api/v1/auth/session-exit/');
+                const payload = new Blob([JSON.stringify({ exit: true })], { type: 'application/json' });
+                navigator.sendBeacon('/api/v1/auth/session-exit/', payload);
             } else {
                 fetch('/api/v1/auth/session-exit/', { method: 'POST', credentials: 'same-origin', keepalive: true });
             }
@@ -553,6 +556,11 @@ document.addEventListener('DOMContentLoaded', function () {
         redirectUrl = redirectUrl || '/login/?reason=signed_out';
         markUserSignedOut();
 
+        try {
+            window.location.replace(redirectUrl);
+            return;
+        } catch (repErr) {}
+
         // 1. If modal form exists, submit it natively with CSRF protection
         const modalForm = document.getElementById('signout-confirm-form');
         if (modalForm) {
@@ -571,30 +579,7 @@ document.addEventListener('DOMContentLoaded', function () {
             } catch (navErr) {}
         }
 
-        // 3. Fallback: dynamically submit POST form with CSRF token
-        try {
-            const form = document.createElement('form');
-            form.method = 'POST';
-            form.action = '/logout/';
-            const csrfToken = getCookie('csrftoken');
-            if (csrfToken) {
-                const csrfInput = document.createElement('input');
-                csrfInput.type = 'hidden';
-                csrfInput.name = 'csrfmiddlewaretoken';
-                csrfInput.value = csrfToken;
-                form.appendChild(csrfInput);
-            }
-            const reasonInput = document.createElement('input');
-            reasonInput.type = 'hidden';
-            reasonInput.name = 'reason';
-            reasonInput.value = 'signed_out';
-            form.appendChild(reasonInput);
-            document.body.appendChild(form);
-            form.submit();
-            return;
-        } catch (dynErr) {}
-
-        window.location.replace(redirectUrl);
+        window.location.href = redirectUrl;
     }
     window.PSPerformSignout = performSignout;
 
@@ -609,12 +594,22 @@ document.addEventListener('DOMContentLoaded', function () {
     document.addEventListener('click', function (e) {
         const modalBtn = e.target.closest('#signout-confirm-action-btn');
         if (modalBtn) {
-            markUserSignedOut();
+            e.preventDefault();
+            modalBtn.disabled = true;
+            modalBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin me-2"></i>Signing Out...';
+            try {
+                sessionStorage.setItem('ps360_user_signed_out', 'true');
+                localStorage.setItem('ps360_user_signed_out', String(Date.now()));
+                const isHttps = window.location.protocol === 'https:';
+                const secureFlag = isHttps ? '; Secure' : '';
+                document.cookie = "ps360_just_logged_out=1; path=/; max-age=300; SameSite=Lax" + secureFlag;
+                document.cookie = "ps360_user_signed_out=1; path=/; max-age=300; SameSite=Lax" + secureFlag;
+            } catch (err) {}
             const form = modalBtn.closest('form') || document.getElementById('signout-confirm-form');
             if (form) {
                 form.submit();
             } else {
-                performSignout('/login/?reason=signed_out');
+                window.location.replace('/login/?reason=signed_out');
             }
             return;
         }
@@ -632,14 +627,29 @@ document.addEventListener('DOMContentLoaded', function () {
         try {
             if (sessionStorage.getItem('ps360_user_signed_out') === 'true' ||
                 localStorage.getItem('ps360_user_signed_out') ||
-                document.cookie.includes('ps360_user_signed_out=1')) {
+                document.cookie.includes('ps360_user_signed_out=1') ||
+                document.cookie.includes('ps360_just_logged_out=1')) {
                 window.location.replace('/login/?reason=signed_out');
                 return;
             }
         } catch (e) {}
 
-        // 2. If restored from bfcache, force fresh server reload
+        // 2. If restored from bfcache on dashboard root, redirect to login
         if (event.persisted) {
+            try {
+                const currentPath = window.location.pathname.replace(/\/+$/, '') || '/';
+                const dashboardRoots = [
+                    '/dashboard', '/requester', '/requester/dashboard', '/approver', '/approver/dashboard',
+                    '/procurement', '/procurement/dashboard', '/finance', '/finance/dashboard', '/stores',
+                    '/stores/dashboard', '/legal', '/legal/dashboard', '/audit', '/audit/dashboard',
+                    '/superadmin', '/superadmin/dashboard', '/manager', '/manager/dashboard', '/vendor',
+                    '/vendor/dashboard', '/admin'
+                ];
+                if (dashboardRoots.includes(currentPath)) {
+                    window.location.replace('/login/?reason=signed_out');
+                    return;
+                }
+            } catch (err) {}
             window.location.reload();
             return;
         }
@@ -792,7 +802,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 document.body.style.removeProperty('padding-right');
             }
             lastBackClickTime = 0;
-            if (rearm !== false) {
+            if (rearm === true) {
                 rearmDashboardGuard();
             }
         }
@@ -829,7 +839,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 signoutTimerInterval = setInterval(function () {
                     remainingMs -= stepMs;
                     if (remainingMs <= 0) {
-                        dismissSignoutModal(true);
+                        dismissSignoutModal(false);
                         return;
                     }
                     const sec = Math.ceil(remainingMs / 1000);
@@ -842,13 +852,13 @@ document.addEventListener('DOMContentLoaded', function () {
 
                 // Stop timer & rearm guard if closed by user clicking "Stay on Dashboard" or modal dismissed
                 modalEl.addEventListener('hidden.bs.modal', function () {
-                    dismissSignoutModal(true);
+                    dismissSignoutModal(false);
                 }, { once: true });
 
                 const stayBtn = document.getElementById('stay-signed-in-btn');
                 if (stayBtn) {
                     stayBtn.onclick = function () {
-                        dismissSignoutModal(true);
+                        dismissSignoutModal(false);
                     };
                 }
             } else if (window.PSConfirm) {
@@ -863,7 +873,7 @@ document.addEventListener('DOMContentLoaded', function () {
                     if (ok) {
                         window.location.replace('/logout/');
                     } else {
-                        dismissSignoutModal(true);
+                        dismissSignoutModal(false);
                     }
                 });
             }
@@ -1037,8 +1047,8 @@ document.addEventListener('DOMContentLoaded', function () {
                     modalEl.getAttribute('data-ps-active') === 'true'
                 );
 
-                if ((timeDiff > 0 && timeDiff < 2000) || isModalOpen) {
-                    // Double-click detected (within 2 seconds) OR modal was already open!
+                if ((timeDiff > 0 && timeDiff < 2500) || isModalOpen) {
+                    // Double-click detected (within 2.5 seconds) OR modal was already open!
                     // User explicitly insists on exiting -> auto sign out immediately!
                     markUserSignedOut();
                     performSignout('/login/?reason=signed_out');
