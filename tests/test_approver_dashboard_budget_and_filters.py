@@ -749,5 +749,48 @@ def test_approver_sees_and_approves_prs_from_departments_without_own_approver(cl
     assert pr2.status == PurchaseRequisition.STATUS_APPROVED
 
 
+@pytest.mark.django_db
+def test_notification_symbol_not_red_when_zero_unread_notifications_even_with_pending_approvals(client, setup_approver_env):
+    """
+    Verifies that the global navbar notification bell does not display a red badge
+    for pending approvals when unread notifications are 0. Marking all notifications
+    as read clears any red badge on the notification bell.
+    """
+    from apps.notifications.models import Notification
+    env = setup_approver_env
+    approver = env["approver"]
+    client.force_login(approver)
+
+    # 1. Create a notification and mark it unread
+    notif = Notification.objects.create(
+        recipient=approver,
+        title="Test Pending Requisition Review",
+        message="You have a new requisition awaiting review.",
+        notification_type=Notification.TYPE_APPROVAL_REQUIRED,
+        is_read=False,
+    )
+
+    # Dashboard should show notification badge
+    dash_resp = client.get("/approver/")
+    assert dash_resp.status_code == 200
+    dash_html = dash_resp.content.decode("utf-8")
+    bell_part_unread = dash_html[dash_html.find('title="Notifications"'):dash_html.find('title="Notifications"') + 500]
+    assert "bg-danger" in bell_part_unread
+
+    # 2. Mark all notifications as read via the endpoint
+    mark_resp = client.post("/notifications/mark-all-read/", follow=True)
+    assert mark_resp.status_code == 200
+    assert Notification.objects.filter(recipient=approver, is_read=False).count() == 0
+
+    # 3. Return to approver dashboard: with 0 unread notifications,
+    # the notification bell MUST NOT display a red badge, even though pending PRs exist.
+    dash_resp2 = client.get("/approver/")
+    assert dash_resp2.status_code == 200
+    dash2_html = dash_resp2.content.decode("utf-8")
+    assert 'title="Notifications"' in dash2_html
+    bell_part_read = dash2_html[dash2_html.find('title="Notifications"'):dash2_html.find('title="Notifications"') + 500]
+    assert "bg-danger" not in bell_part_read
+
+
 
 

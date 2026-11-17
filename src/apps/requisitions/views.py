@@ -661,12 +661,10 @@ def detail_view(request, pk):
     # 2. Role-based scoping and object-level permissions
     if role_code == Role.REQUESTER and not user.is_superuser:
         is_own_pr = bool(pr.requester_id == user.id)
-        is_same_dept = bool(user_dept_id and pr_dept_id and user_dept_id == pr_dept_id)
-        is_same_cc = bool(user_cc_id and pr_cc_id and user_cc_id == pr_cc_id)
-        if not (is_own_pr or is_same_dept or is_same_cc or is_cc_manager):
-            from django.core.exceptions import PermissionDenied
+        if not is_own_pr:
+            from django.http import Http404
 
-            raise PermissionDenied("You do not have permission to view requisitions from another department.")
+            raise Http404("Purchase requisition not found.")
 
     elif role_code == Role.DEPT_APPROVER and not user.is_superuser:
         is_own_pr = bool(pr.requester_id == user.id)

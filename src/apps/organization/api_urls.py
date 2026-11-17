@@ -79,7 +79,7 @@ class IsAdminOrReadOnly(BasePermission):
 
 
 class OrganizationViewSet(viewsets.ModelViewSet):
-    queryset = Organization.objects.all().order_by("name")
+    queryset = Organization.objects.all().order_by("name", "id")
     serializer_class = OrganizationSerializer
     permission_classes = [IsAdminOrReadOnly]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
@@ -137,7 +137,7 @@ class OrganizationViewSet(viewsets.ModelViewSet):
 
 
 class DepartmentViewSet(viewsets.ModelViewSet):
-    queryset = Department.objects.all().order_by("name")
+    queryset = Department.objects.all().order_by("name", "id")
     serializer_class = DepartmentSerializer
     permission_classes = [IsAdminOrReadOnly]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
@@ -163,7 +163,7 @@ class DepartmentViewSet(viewsets.ModelViewSet):
 
 
 class CostCenterViewSet(viewsets.ModelViewSet):
-    queryset = CostCenter.objects.all().order_by("name")
+    queryset = CostCenter.objects.all().order_by("name", "id")
     serializer_class = CostCenterSerializer
     permission_classes = [IsAdminOrReadOnly]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
