@@ -424,3 +424,31 @@ class TestBrowserNavigationAndSignoutGuard:
         resp_inbox = client.get("/approvals/inbox/?status=PENDING")
         assert resp_inbox.status_code == 200
         assert "_auth_user_id" in client.session
+
+    def test_sidebar_scroll_state_preservation(self, client):
+        """Sidebar scroll position is captured and restored across page navigations to keep the same state."""
+        with open("static/js/app.js", "r", encoding="utf-8") as f:
+            app_js = f.read()
+
+        assert "initSidebarScrollPreservation" in app_js
+        assert "ps_sidebar_scroll_pos" in app_js
+        assert "getSidebarScrollContainer" in app_js
+
+        with open("templates/base.html", "r", encoding="utf-8") as f:
+            base_html = f.read()
+
+        assert "restoreSidebarScrollState" in base_html
+        assert "ps_sidebar_scroll_pos" in base_html
+
+        role, _ = Role.objects.get_or_create(code=Role.SUPER_ADMIN, defaults={"name": "Super Admin"})
+        user, _ = User.objects.get_or_create(
+            email="sa_sidebar_scroll_test@procuresphere.com",
+            defaults={"username": "sa_sidebar_scroll_test@procuresphere.com", "role": role, "is_active": True},
+        )
+        client.force_login(user)
+
+        resp_sa = client.get("/superadmin/")
+        assert resp_sa.status_code == 200
+        content = resp_sa.content.decode("utf-8")
+        assert "restoreSidebarScrollState" in content
+        assert "ps_sidebar_scroll_pos" in content

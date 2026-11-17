@@ -1093,6 +1093,89 @@ document.addEventListener('DOMContentLoaded', function () {
             });
         }
     })();
+
+    // =========================================================================
+    // Universal Enterprise Sidebar Scroll State Preservation Controller
+    // Preserves exact sidebar scroll position across page refreshes and navigations
+    // Ensures clicked sidebar link and active route stay locked in view without jumping to top
+    // =========================================================================
+    (function initSidebarScrollPreservation() {
+        function getSidebarScrollContainer() {
+            const scrollable = document.querySelector(
+                '.sa-nav-scroll, aside nav.overflow-y-auto, [id$="Sidebar"] nav.overflow-y-auto, [id$="Nav"].overflow-y-auto, aside nav, [id$="Sidebar"] nav, aside .offcanvas-body'
+            );
+            if (scrollable) return scrollable;
+            const aside = document.querySelector('aside.sa-sidebar-desktop, aside.enterprise-sidebar, [id$="Sidebar"], aside');
+            if (aside) {
+                return aside.querySelector('.sa-nav-scroll, nav, .overflow-y-auto, .offcanvas-body') || aside;
+            }
+            return null;
+        }
+
+        function restoreSidebarScroll() {
+            const el = getSidebarScrollContainer();
+            if (!el) return;
+
+            let targetScroll = null;
+            try {
+                const saved = sessionStorage.getItem('ps_sidebar_scroll_pos');
+                if (saved !== null && saved !== '') {
+                    const parsed = parseInt(saved, 10);
+                    if (!isNaN(parsed) && parsed >= 0) {
+                        targetScroll = parsed;
+                    }
+                }
+            } catch (e) {}
+
+            const apply = function () {
+                if (targetScroll !== null && targetScroll > 0) {
+                    el.scrollTop = targetScroll;
+                } else if (targetScroll === null) {
+                    try {
+                        const activeLink = el.querySelector(
+                            'a.active, a.active-nav-item, .sa-nav-link.active, .vendor-navlink.active-nav-item, .approver-navlink.active-nav-item'
+                        );
+                        if (activeLink) {
+                            const elRect = el.getBoundingClientRect();
+                            const linkRect = activeLink.getBoundingClientRect();
+                            if (linkRect.top < elRect.top || linkRect.bottom > elRect.bottom) {
+                                activeLink.scrollIntoView({ block: 'nearest', behavior: 'auto' });
+                            }
+                        }
+                    } catch (err) {}
+                }
+            };
+
+            apply();
+            requestAnimationFrame(apply);
+            setTimeout(apply, 30);
+            setTimeout(apply, 100);
+        }
+
+        restoreSidebarScroll();
+        window.addEventListener('pageshow', restoreSidebarScroll);
+
+        const sc = getSidebarScrollContainer();
+        if (sc) {
+            sc.addEventListener('scroll', function () {
+                try {
+                    sessionStorage.setItem('ps_sidebar_scroll_pos', String(sc.scrollTop));
+                } catch (e) {}
+            }, { passive: true });
+        }
+
+        document.addEventListener('click', function (e) {
+            const link = e.target.closest('aside a, [id$="Sidebar"] a, .sa-nav-link, .vendor-navlink, .approver-navlink, .manager-nav-link');
+            if (link) {
+                const container = getSidebarScrollContainer();
+                if (container && container.scrollTop >= 0) {
+                    try {
+                        sessionStorage.setItem('ps_sidebar_scroll_pos', String(container.scrollTop));
+                    } catch (err) {}
+                }
+            }
+        }, true);
+    })();
 });
 
 // =============================================================================
