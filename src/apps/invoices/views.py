@@ -1,3 +1,4 @@
+import logging
 from decimal import Decimal
 
 from django.contrib import messages
@@ -5,6 +6,9 @@ from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ValidationError
 from django.db.models import Q
 from django.shortcuts import get_object_or_404, redirect, render
+from django.utils import timezone
+
+logger = logging.getLogger(__name__)
 
 from apps.accounts.models import Role
 from apps.invoices.models import MatchException, MatchTolerancePolicy, SupplierInvoice
@@ -491,6 +495,11 @@ def create_invoice_view(request):
             messages.error(request, "Invoice Date is required.")
             return render(request, "pages/invoices/create.html", {"vendors": vendors, "pos": pos, "form_data": form_data})
 
+        today_iso = timezone.now().date().isoformat()
+        if invoice_date > today_iso:
+            messages.error(request, "Invoice Date cannot be in the future. Please select today or an earlier date.")
+            return render(request, "pages/invoices/create.html", {"vendors": vendors, "pos": pos, "form_data": form_data})
+
         if not due_date:
             messages.error(request, "Payment Due Date is required.")
             return render(request, "pages/invoices/create.html", {"vendors": vendors, "pos": pos, "form_data": form_data})
@@ -527,6 +536,15 @@ def create_invoice_view(request):
         try:
             vendor = get_object_or_404(Vendor, id=vendor_id)
             po = get_object_or_404(PurchaseOrder, id=po_id)
+
+            if po.vendor_id != vendor.id:
+                messages.error(request, f"Purchase Order {po.po_number} does not belong to vendor '{vendor.legal_name}'.")
+                return render(request, "pages/invoices/create.html", {"vendors": vendors, "pos": pos, "form_data": form_data})
+
+            if not po.lines.exists():
+                messages.error(request, f"Purchase Order {po.po_number} has no line items and cannot be invoiced.")
+                return render(request, "pages/invoices/create.html", {"vendors": vendors, "pos": pos, "form_data": form_data})
+
             po_line = po.lines.first()
 
             line_items = [
@@ -562,8 +580,12 @@ def create_invoice_view(request):
                 err_msg = str(ve).strip("[]'\"")
             messages.error(request, err_msg)
             return render(request, "pages/invoices/create.html", {"vendors": vendors, "pos": pos, "form_data": form_data})
-        except Exception:
-            messages.error(request, "An unexpected error occurred while creating the invoice. Please check your inputs and try again.")
+        except Exception as e:
+            logger.exception("Unexpected error while creating supplier invoice")
+            err_msg = str(e).strip("[]'\"")
+            if not err_msg:
+                err_msg = "Please check your inputs and try again."
+            messages.error(request, f"Failed to create invoice: {err_msg}")
             return render(request, "pages/invoices/create.html", {"vendors": vendors, "pos": pos, "form_data": form_data})
 
     return render(request, "pages/invoices/create.html", {"vendors": vendors, "pos": pos, "form_data": form_data})

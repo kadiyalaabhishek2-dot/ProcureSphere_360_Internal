@@ -57,7 +57,7 @@
                     <select class="form-select bg-light" id="poSelect" name="po_id" required>
                         <option value="">Select PO...</option>
                         {% for po in pos %}
-                            <option value="{{ po.id }}" {% if form_data.po_id == po.id|stringformat:"s" %}selected{% endif %}>
+                            <option value="{{ po.id }}" data-vendor-id="{{ po.vendor.id }}" {% if form_data.po_id == po.id|stringformat:"s" %}selected{% endif %}>
                                 {{ po.po_number }} - {{ po.vendor.legal_name }} (₹{{ po.total_amount }})
                             </option>
                         {% endfor %}
@@ -82,8 +82,9 @@
                         Invoice Date <span class="text-danger">*</span>
                     </label>
                     <input type="date" class="form-control bg-light" id="invoiceDateInput" name="invoice_date" 
-                           value="{{ form_data.invoice_date|default:'' }}" required>
-                    <div class="invalid-feedback">Please enter a valid invoice date.</div>
+                           value="{{ form_data.invoice_date|default:'' }}" max="{% now 'Y-m-d' %}" required>
+                    <div class="form-text small text-muted">Invoice Date cannot be in the future (today or earlier).</div>
+                    <div class="invalid-feedback">Please enter a valid invoice date (today or in the past).</div>
                 </div>
                 <div class="col-md-4">
                     <label class="form-label fw-bold text-muted small text-uppercase" for="dueDateInput">
@@ -230,12 +231,55 @@ document.addEventListener('DOMContentLoaded', function() {
     const alertText = document.getElementById('validationAlertText');
     const invoiceDate = document.getElementById('invoiceDateInput');
     const dueDate = document.getElementById('dueDateInput');
+    const vendorSelect = document.getElementById('vendorSelect');
+    const poSelect = document.getElementById('poSelect');
+
+    // Dynamically filter POs by selected Vendor
+    function filterPOsByVendor(preserveSelection = false) {
+        if (!vendorSelect || !poSelect) return;
+        const selectedVendorId = vendorSelect.value;
+        const options = Array.from(poSelect.options);
+        let matchCount = 0;
+
+        options.forEach(opt => {
+            if (!opt.value) return; // Keep placeholder
+            const optVendorId = opt.getAttribute('data-vendor-id');
+            if (!selectedVendorId || optVendorId === selectedVendorId) {
+                opt.hidden = false;
+                opt.disabled = false;
+                matchCount++;
+            } else {
+                opt.hidden = true;
+                opt.disabled = true;
+            }
+        });
+
+        const selectedOption = poSelect.options[poSelect.selectedIndex];
+        if (!preserveSelection) {
+            if (selectedOption && selectedOption.value) {
+                const optVendorId = selectedOption.getAttribute('data-vendor-id');
+                if (selectedVendorId && optVendorId !== selectedVendorId) {
+                    poSelect.value = '';
+                }
+            }
+        }
+    }
+
+    if (vendorSelect) {
+        vendorSelect.addEventListener('change', function() {
+            filterPOsByVendor(false);
+        });
+        filterPOsByVendor(true);
+    }
 
     // Run initial calculation if pre-filled
     validateCountsAndCalculate();
 
     // Auto-update min due date when invoice date changes
     if (invoiceDate && dueDate) {
+        if (invoiceDate.value) {
+            dueDate.min = invoiceDate.value;
+        }
         invoiceDate.addEventListener('change', function() {
             if (invoiceDate.value) {
                 dueDate.min = invoiceDate.value;
@@ -302,6 +346,17 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         // Validate Dates
+        const todayStr = new Date().toISOString().split('T')[0];
+        if (invoiceDate.value && invoiceDate.value > todayStr) {
+            invoiceDate.classList.add('is-invalid');
+            hasError = true;
+            if (!errorMessage) {
+                errorMessage = 'Invoice Date cannot be in the future. Please select today or an earlier date.';
+            }
+        } else if (invoiceDate.value) {
+            invoiceDate.classList.remove('is-invalid');
+        }
+
         if (invoiceDate.value && dueDate.value && dueDate.value < invoiceDate.value) {
             dueDate.classList.add('is-invalid');
             hasError = true;
