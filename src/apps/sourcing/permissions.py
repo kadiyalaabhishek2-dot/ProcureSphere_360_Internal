@@ -20,6 +20,7 @@ EVENT_READ_ROLES = {
     Role.LEGAL_MGR,
 }
 EVENT_MANAGE_ROLES = {Role.SUPER_ADMIN, Role.PROC_EXEC, Role.PROC_MGR}
+EVENT_PUBLISH_ROLES = {Role.SUPER_ADMIN, Role.PROC_EXEC}
 AWARD_APPROVE_ROLES = {Role.SUPER_ADMIN, Role.PROC_MGR}
 BID_READ_ROLES = {Role.SUPER_ADMIN, Role.PROC_EXEC, Role.PROC_MGR, Role.AUDITOR}
 
@@ -40,6 +41,10 @@ def can_manage_events(user) -> bool:
     return _role(user) in EVENT_MANAGE_ROLES
 
 
+def can_publish_events(user) -> bool:
+    return _role(user) in EVENT_PUBLISH_ROLES
+
+
 def can_approve_award(user) -> bool:
     return _role(user) in AWARD_APPROVE_ROLES
 
@@ -52,6 +57,7 @@ def sourcing_capabilities(user) -> dict:
     return {
         "can_view": can_view_events(user),
         "can_manage": can_manage_events(user),
+        "can_publish": can_publish_events(user),
         "can_approve_award": can_approve_award(user),
         "can_read_bids": can_read_bids(user),
     }

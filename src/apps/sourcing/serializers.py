@@ -112,8 +112,14 @@ class SourcingEventSerializer(serializers.ModelSerializer):
             return "BIDDING_OPEN"
         if obj.status == SourcingEvent.STATUS_TECHNICAL_REVIEW:
             return "TECHNICAL_REVIEW"
+        if obj.status == SourcingEvent.STATUS_COMMERCIAL_REVIEW:
+            return "COMMERCIAL_REVIEW"
         if obj.status == SourcingEvent.STATUS_AWARD_APPROVAL:
-            return "READY_FOR_AWARD"
+            bids_cnt = self.get_submitted_bid_count(obj)
+            return "READY_FOR_AWARD" if bids_cnt > 0 else "NO_BIDS"
+        if obj.status == SourcingEvent.STATUS_CANCELLED:
+            bids_cnt = self.get_submitted_bid_count(obj)
+            return "NO_BIDS" if bids_cnt == 0 else "CANCELLED"
         return obj.status
 
 

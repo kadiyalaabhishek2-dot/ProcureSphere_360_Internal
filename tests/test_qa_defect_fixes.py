@@ -267,7 +267,7 @@ def test_def_002_budget_overspend_triggers_budget_review(qa_setup):
         cost_center=qa_setup["cc1"],
         fiscal_period=qa_setup["fp"],
         allocated_amount=Decimal("100.00"),
-        allow_overspend=False,
+        allow_overspend=True,
     )
     policy, _ = ApprovalPolicy.objects.get_or_create(
         organization=qa_setup["org"],

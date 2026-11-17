@@ -176,7 +176,10 @@ class PurchaseRequisitionSerializer(serializers.ModelSerializer):
                     )
 
         # Organization / Tenant isolation check
-        if request and request.user and request.user.is_authenticated and not request.user.is_superuser:
+        user_role = getattr(request.user, "role_code", None) or (
+            request.user.role.code if getattr(request.user, "role", None) else None
+        ) if request and request.user else None
+        if request and request.user and request.user.is_authenticated and not (request.user.is_superuser or user_role == Role.SUPER_ADMIN):
             user_org = getattr(request.user, "organization", None) or getattr(request.user, "effective_organization", None)
             if user_org:
                 if getattr(department, "organization_id", None) and department.organization_id != user_org.id:
@@ -377,7 +380,7 @@ class CanCreateRequisitionPermission(permissions.BasePermission):
 
         if not request.user.is_superuser and (
             getattr(request.user, "is_vendor", False)
-            or role_code in [Role.VENDOR_USER]
+            or role_code in [Role.VENDOR_USER, Role.STORES_RECEIVER, Role.LEGAL_MGR]
         ):
             return False
 
@@ -388,6 +391,7 @@ class CanCreateRequisitionPermission(permissions.BasePermission):
             if action in ["approve", "reject"]:
                 return role_code in [
                     Role.DEPT_APPROVER,
+                    Role.PROC_MGR,
                     Role.FINANCE_AP,
                     Role.SUPER_ADMIN,
                 ]
@@ -395,6 +399,19 @@ class CanCreateRequisitionPermission(permissions.BasePermission):
                 return role_code in [Role.REQUESTER, Role.PROC_MGR, Role.SUPER_ADMIN]
             return role_code in [Role.REQUESTER, Role.SUPER_ADMIN]
 
+        return True
+
+    def has_object_permission(self, request, view, obj):
+        if not request.user or not request.user.is_authenticated:
+            return False
+        if request.user.is_superuser:
+            return True
+        role_code = getattr(request.user, "role_code", None) or (
+            request.user.role.code if hasattr(request.user, "role") and request.user.role else None
+        )
+        # DEF-001: Enforce strict object-level authorization - Requesters can only access own requisitions
+        if role_code == Role.REQUESTER:
+            return obj.requester_id == request.user.id
         return True
 
 
@@ -464,8 +481,11 @@ class PurchaseRequisitionViewSet(viewsets.ModelViewSet):
                 ).distinct()
             else:
                 qs = self.queryset.all()
+        elif role_code == Role.REQUESTER:
+            # DEF-001: Requesters can only access their own requisitions (prevents IDOR)
+            qs = self.queryset.filter(requester=user)
         else:
-            # Requesters: can view their own requisitions
+            # Fallback for unrecognized roles: view their own requisitions
             from django.db.models import Q
 
             req_q = Q(requester=user)
@@ -688,7 +708,12 @@ class PurchaseRequisitionViewSet(viewsets.ModelViewSet):
                 raise permissions.exceptions.PermissionDenied(
                     "You do not have permission to reject Purchase Requisitions."
                 )
-        comments = (request.data.get("comments") or request.data.get("reason") or "").strip()
+        comments = (
+            request.data.get("comments")
+            or request.data.get("reason")
+            or request.data.get("rejection_reason")
+            or ""
+        ).strip()
         if not comments:
             raise serializers.ValidationError(
                 {"comments": "Rejection comments/justification are mandatory."}

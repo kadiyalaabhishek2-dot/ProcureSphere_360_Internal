@@ -241,6 +241,9 @@ def approvals_inbox_view(request):
     tab = request.GET.get("tab", "pending")
     search_q = request.GET.get("q", "").strip()
     status_filter = request.GET.get("status", "").strip()
+    overrun_filter = request.GET.get("overrun", "").strip().lower() in ["1", "true", "yes"]
+    if overrun_filter and not status_filter:
+        status_filter = "BUDGET_REVIEW"
 
     is_legal_inbox = bool(not user.is_superuser and role_code == Role.LEGAL_MGR)
     query_params = request.GET.copy()
@@ -352,6 +355,37 @@ def approvals_inbox_view(request):
                             PurchaseRequisition.STATUS_BUDGET_REVIEW,
                         ]
                     )
+                elif status_filter == "BUDGET_REVIEW":
+                    # Include PRs in STATUS_BUDGET_REVIEW as well as any pending PRs that exceed cost center budget allocation
+                    today_date = timezone.now().date()
+                    overrun_ids = set(
+                        pending_prs.filter(status=PurchaseRequisition.STATUS_BUDGET_REVIEW).values_list("id", flat=True)
+                    )
+                    other_pending = list(pending_prs.exclude(status=PurchaseRequisition.STATUS_BUDGET_REVIEW))
+                    cc_ids = [pr.cost_center_id for pr in other_pending if pr.cost_center_id]
+                    if cc_ids:
+                        from apps.budgets.models import Budget
+
+                        active_budgets = {}
+                        for b in Budget.objects.filter(
+                            cost_center_id__in=cc_ids,
+                            fiscal_period__start_date__lte=today_date,
+                            fiscal_period__end_date__gte=today_date,
+                            fiscal_period__is_closed=False,
+                        ).order_by("-fiscal_period__start_date"):
+                            active_budgets.setdefault(b.cost_center_id, b)
+                        missing_cc_ids = [cid for cid in cc_ids if cid not in active_budgets]
+                        if missing_cc_ids:
+                            for b in Budget.objects.filter(
+                                cost_center_id__in=missing_cc_ids,
+                                fiscal_period__is_closed=False,
+                            ).order_by("-fiscal_period__start_date"):
+                                active_budgets.setdefault(b.cost_center_id, b)
+                        for pr in other_pending:
+                            b = active_budgets.get(pr.cost_center_id)
+                            if b is not None and (b.available_amount <= 0 or pr.total_amount > b.available_amount):
+                                overrun_ids.add(pr.id)
+                    pending_prs = pending_prs.filter(id__in=overrun_ids)
                 elif status_filter in valid_pending_statuses:
                     pending_prs = pending_prs.filter(status=status_filter)
                 else:
@@ -365,7 +399,37 @@ def approvals_inbox_view(request):
         ).order_by("-updated_at")
 
         pending_count = pending_prs.count()
-        has_budget_overrun = pending_prs.filter(status="BUDGET_REVIEW").exists()
+        if status_filter == "BUDGET_REVIEW":
+            has_budget_overrun = pending_prs.exists()
+        else:
+            has_budget_overrun = pending_prs.filter(status="BUDGET_REVIEW").exists()
+            if not has_budget_overrun:
+                cc_ids = list(pending_prs.values_list("cost_center_id", flat=True).distinct())
+                cc_ids = [cid for cid in cc_ids if cid]
+                if cc_ids:
+                    from apps.budgets.models import Budget
+
+                    today_date = timezone.now().date()
+                    active_budgets = {}
+                    for b in Budget.objects.filter(
+                        cost_center_id__in=cc_ids,
+                        fiscal_period__start_date__lte=today_date,
+                        fiscal_period__end_date__gte=today_date,
+                        fiscal_period__is_closed=False,
+                    ).order_by("-fiscal_period__start_date"):
+                        active_budgets.setdefault(b.cost_center_id, b)
+                    missing_cc_ids = [cid for cid in cc_ids if cid not in active_budgets]
+                    if missing_cc_ids:
+                        for b in Budget.objects.filter(
+                            cost_center_id__in=missing_cc_ids,
+                            fiscal_period__is_closed=False,
+                        ).order_by("-fiscal_period__start_date"):
+                            active_budgets.setdefault(b.cost_center_id, b)
+                    for pr in pending_prs:
+                        b = active_budgets.get(pr.cost_center_id)
+                        if b is not None and (b.available_amount <= 0 or pr.total_amount > b.available_amount):
+                            has_budget_overrun = True
+                            break
 
         if tab == "history":
             history_paginator = Paginator(history_prs, 10)

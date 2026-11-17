@@ -1268,11 +1268,19 @@ def attachment_download_view(request, pk, attachment_id):
         },
     )
 
-    content_type, _ = mimetypes.guess_type(attachment.title or file_path)
+    content_type, _ = mimetypes.guess_type(file_path)
+    if not content_type and attachment.file and attachment.file.name:
+        content_type, _ = mimetypes.guess_type(attachment.file.name)
+    if not content_type and attachment.title:
+        content_type, _ = mimetypes.guess_type(attachment.title)
     if not content_type:
-        content_type = "application/octet-stream"
+        content_type = "application/pdf" if file_path.lower().endswith(".pdf") else "application/octet-stream"
 
     filename = attachment.title or os.path.basename(file_path)
+    ext = getattr(attachment, "file_extension", "")
+    if ext and not filename.lower().endswith(f".{ext.lower()}"):
+        filename = f"{filename}.{ext}"
+
     response = FileResponse(
         open(file_path, "rb"),
         as_attachment=as_attachment,

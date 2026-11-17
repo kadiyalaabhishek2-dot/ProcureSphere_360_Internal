@@ -52,13 +52,9 @@ class CanManageSupplierInvoice(BasePermission):
             action = getattr(view, "action", "")
             if "exception" in basename or "exception" in action:
                 return False
-            if action == "create_invoice":
-                return False
-            if action in ["pay_invoice", "pay", "run_match", "run_3_way_match"]:
+            if action in ["create_invoice", "pay_invoice", "pay", "run_match", "run_3_way_match"]:
                 return False
             if request.method in SAFE_METHODS:
-                return True
-            if request.method == "POST" and basename == "invoice" and action in ["create", None]:
                 return True
             return False
 
@@ -84,14 +80,24 @@ class CanManageSupplierInvoice(BasePermission):
         if getattr(view, "action", None) in ["run_match", "run_3_way_match"]:
             return role_code in [Role.SUPER_ADMIN, Role.FINANCE_AP, "SUPER_ADMIN", "FINANCE_AP"]
 
-        # Internal read-only roles on invoices per RBAC matrix (Proc Exec, Proc Mgr, Stores Receiver, Auditor)
+        # DEF-004 & DEF-005: Procurement Executives and Procurement Managers are permitted to create invoices
+        # (POST /api/v1/invoices/) and perform safe reads, while payment and exception resolution remain restricted.
         if role_code in [
             Role.PROC_EXEC,
             Role.PROC_MGR,
-            Role.STORES_RECEIVER,
-            Role.AUDITOR,
             "PROC_EXEC",
             "PROC_MGR",
+        ]:
+            if request.method in SAFE_METHODS:
+                return True
+            if request.method == "POST" and getattr(view, "action", None) in ["create", None]:
+                return True
+            return False
+
+        # Internal read-only roles on invoices per RBAC matrix (Stores Receiver, Auditor)
+        if role_code in [
+            Role.STORES_RECEIVER,
+            Role.AUDITOR,
             "STORES_RECEIVER",
             "AUDITOR",
         ]:
@@ -137,10 +143,18 @@ class CanManageSupplierInvoice(BasePermission):
         if role_code in [
             Role.PROC_EXEC,
             Role.PROC_MGR,
-            Role.STORES_RECEIVER,
-            Role.AUDITOR,
             "PROC_EXEC",
             "PROC_MGR",
+        ]:
+            if request.method in SAFE_METHODS:
+                return True
+            if request.method == "POST":
+                return True
+            return False
+
+        if role_code in [
+            Role.STORES_RECEIVER,
+            Role.AUDITOR,
             "STORES_RECEIVER",
             "AUDITOR",
         ]:

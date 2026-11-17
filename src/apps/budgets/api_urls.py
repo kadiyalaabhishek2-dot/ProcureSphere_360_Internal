@@ -40,12 +40,14 @@ class CanManageBudget(BasePermission):
         if request.method in SAFE_METHODS:
             return True
 
-        if getattr(request.user, "role_code", None) in [Role.AUDITOR, Role.REQUESTER]:
+        if role_code in [Role.AUDITOR, Role.REQUESTER, "AUDITOR", "REQUESTER"]:
             return False
 
-        return request.user.is_superuser or request.user.role_code in [
+        return request.user.is_superuser or role_code in [
             Role.SUPER_ADMIN,
             Role.FINANCE_AP,
+            "SUPER_ADMIN",
+            "FINANCE_AP",
         ]
 
 

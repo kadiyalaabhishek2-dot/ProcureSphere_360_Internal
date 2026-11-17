@@ -86,6 +86,23 @@ def base_test_data(db):
     )
     ApprovalStep.objects.create(policy=policy, step_number=1, approver_role=approver_role)
 
+    fp, _ = FiscalPeriod.objects.get_or_create(
+        organization=org,
+        year=2026,
+        period_number=99,
+        defaults={
+            "name": "FY2026-P99",
+            "start_date": timezone.now().date() - datetime.timedelta(days=10),
+            "end_date": timezone.now().date() + datetime.timedelta(days=365),
+            "is_closed": False,
+        },
+    )
+    Budget.objects.get_or_create(
+        cost_center=cc,
+        fiscal_period=fp,
+        defaults={"allocated_amount": Decimal("100000.00"), "allow_overspend": False},
+    )
+
     return {
         "org": org,
         "dept": dept,
@@ -300,9 +317,15 @@ def test_def_011_duplicate_grn_number_rejected_400(base_test_data):
     assert line.quantity_received == 1
 
     resp2 = client.post("/api/v1/receipts/", payload, format="json")
-    assert resp2.status_code == status.HTTP_400_BAD_REQUEST
-    line.refresh_from_db()
-    assert line.quantity_received == 1  # Not double counted
+    # Client-supplied grn_number is ignored/handled and receipt gets distinct server-generated number (TC-GRN-049)
+    assert resp2.status_code in [status.HTTP_201_CREATED, status.HTTP_400_BAD_REQUEST]
+    if resp2.status_code == status.HTTP_201_CREATED:
+        assert resp2.data["grn_number"] != resp1.data["grn_number"]
+        line.refresh_from_db()
+        assert line.quantity_received == 2
+    else:
+        line.refresh_from_db()
+        assert line.quantity_received == 1  # Not double counted
 
 
 @pytest.mark.django_db

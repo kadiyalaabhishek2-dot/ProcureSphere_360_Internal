@@ -17,6 +17,8 @@
     <link rel="manifest" href="{% static 'icons/site.webmanifest' %}">
     <meta name="theme-color" content="#ffffff">
 
+    <!-- CDN Preconnects -->
+    <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
     <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -576,7 +578,7 @@
     <div class="login-content-wrapper">
 
         <!-- Exit pill — embedded at top-right inside the login card -->
-        <a href="/" id="login-exit-btn" class="lm-exit-pill" aria-label="Exit to Home">
+        <a href="/?logged_out=1" id="login-exit-btn" class="lm-exit-pill" aria-label="Exit to Home" onclick="window.location.href='/?logged_out=1'; return false;">
             Exit
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
                 <line x1="18" y1="6" x2="6" y2="18"></line>
@@ -835,16 +837,23 @@
             });
         }
 
-        // Exit button sets flags to prevent intro video on return to home
+        // Exit button reliably clears session markers and navigates to public landing page
         const exitBtn = document.getElementById('login-exit-btn');
         if (exitBtn) {
-            exitBtn.addEventListener('click', function () {
+            exitBtn.addEventListener('click', function (e) {
+                e.preventDefault();
                 try {
                     sessionStorage.setItem('ps360_clicked_home', 'true');
                     sessionStorage.setItem('ps360_logged_out', 'true');
                     sessionStorage.setItem('ps360_from_login', 'true');
-                    document.cookie = "ps360_just_logged_out=1; path=/; max-age=60; SameSite=Lax";
-                } catch (e) { }
+                    sessionStorage.removeItem('ps360_user_signed_out');
+                    sessionStorage.removeItem('ps_visited_subpage');
+                    sessionStorage.removeItem('ps360_active_subpage');
+                    sessionStorage.removeItem('ps_last_subpage_path');
+                    document.cookie = "ps360_user_signed_out=; path=/; max-age=0";
+                    document.cookie = "ps360_just_logged_out=; path=/; max-age=0";
+                } catch (err) { }
+                window.location.href = '/?logged_out=1';
             });
         }
 
