@@ -1296,8 +1296,6 @@ VENDOR_GOVERNANCE_TRANSITIONS = {
 
     (Vendor.STATUS_CHANGES_REQUIRED, Vendor.STATUS_REJECTED): "operate",
 
-    (Vendor.STATUS_DRAFT, Vendor.STATUS_REJECTED): "operate",
-
     # Manager Direct Suspension / Blacklist from any status
     (Vendor.STATUS_DRAFT, Vendor.STATUS_SUSPENDED): "suspend",
     (Vendor.STATUS_SUSPENDED, Vendor.STATUS_DRAFT): "suspend",
@@ -1426,6 +1424,20 @@ def set_vendor_status_governance_service(
     if new_status == Vendor.STATUS_SUSPENDED:
         vendor.is_event_eligible = False
         vendor.event_eligibility_status = Vendor.ELIGIBILITY_SUSPENDED
+        # Revoke open, unresponded event invitations upon suspension
+        try:
+            from apps.sourcing.models import BidInvite, SourcingEvent
+            BidInvite.objects.filter(
+                vendor=vendor,
+                event__status__in=[
+                    SourcingEvent.STATUS_DRAFT,
+                    SourcingEvent.STATUS_PUBLISHED,
+                    SourcingEvent.STATUS_BID_WINDOW,
+                ],
+                is_responded=False,
+            ).delete()
+        except Exception:
+            pass
     elif new_status in (Vendor.STATUS_ON_HOLD, Vendor.STATUS_REJECTED, Vendor.STATUS_CHANGES_REQUIRED):
         vendor.is_event_eligible = False
         vendor.event_eligibility_status = Vendor.ELIGIBILITY_INELIGIBLE
@@ -1450,7 +1462,10 @@ def set_vendor_status_governance_service(
 
         action=(
             AuditLog.ACTION_APPROVE
-            if new_status == Vendor.STATUS_ACTIVE
+            if (
+                new_status == Vendor.STATUS_ACTIVE
+                and previous_status in [Vendor.STATUS_SUBMITTED, Vendor.STATUS_KYC_REVIEW, Vendor.STATUS_CHANGES_REQUIRED]
+            )
             else (
                 AuditLog.ACTION_REJECT
                 if new_status == Vendor.STATUS_REJECTED

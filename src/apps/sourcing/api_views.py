@@ -5,8 +5,9 @@ from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.exceptions import ValidationError as DRFValidationError
-from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
+
+from apps.core.pagination import StandardResultsSetPagination
 
 from . import services
 from .models import BidEvaluation, Clarification, SourcingEvent, VendorBid
@@ -15,6 +16,7 @@ from .permissions import (
     BidPermission,
     SourcingEventPermission,
     can_manage_events,
+    can_publish_events,
     can_read_bids,
 )
 from .selectors import (
@@ -48,10 +50,15 @@ def _require_manage(request):
         raise PermissionDenied("Only procurement users can perform this sourcing action.")
 
 
-class SourcingPagination(PageNumberPagination):
+def _require_publish(request):
+    if not can_publish_events(request.user):
+        raise PermissionDenied("Only procurement executives can publish sourcing events.")
+
+
+class SourcingPagination(StandardResultsSetPagination):
     page_size = 10
     page_size_query_param = "page_size"
-    max_page_size = 100
+    max_page_size = 1000
 
     def get_paginated_response(self, data):
         return Response(
@@ -139,7 +146,7 @@ class SourcingEventViewSet(
             technical_weight=data.get("technical_weight", 50),
             commercial_weight=data.get("commercial_weight", 50),
             created_by_user=self.request.user,
-            enforce_future_start=True,
+            enforce_future_start=False,
         )
 
     def perform_update(self, serializer):
@@ -147,7 +154,7 @@ class SourcingEventViewSet(
             event=serializer.instance,
             user=self.request.user,
             data=serializer.validated_data,
-            enforce_future_start=True,
+            enforce_future_start=False,
         )
 
     def _ok(self, event):
@@ -159,7 +166,7 @@ class SourcingEventViewSet(
     @extend_schema(request=None, responses=SourcingEventSerializer)
     @action(detail=True, methods=["post"])
     def publish(self, request, pk=None):
-        _require_manage(request)
+        _require_publish(request)
         event = self.get_object()
         active_invites = [
             i for i in event.invitations.select_related("vendor").all()

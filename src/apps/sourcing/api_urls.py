@@ -1,7 +1,8 @@
-from django.views.decorators.http import require_http_methods
 from django.db import models
 from django.shortcuts import get_object_or_404
 from django.urls import path
+from django.utils import timezone
+from django.views.decorators.http import require_http_methods
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -10,6 +11,7 @@ from rest_framework.views import APIView
 
 from apps.accounts.permissions import IsProcurementManager
 from apps.audit.models import AuditLog
+from apps.vendors.models import Vendor
 
 from .api_views import (
     BidEvaluationViewSet,
@@ -17,7 +19,7 @@ from .api_views import (
     SourcingEventViewSet,
     VendorBidViewSet,
 )
-from .models import SourcingEvent, VendorBid
+from .models import AwardDecision, SourcingEvent, VendorBid
 from .services import evaluate_and_award_sourcing_event_service
 
 
@@ -30,20 +32,32 @@ def get_user_org(user):
 class PendingAwardsAPIView(APIView):
     """
     GET /api/v1/sourcing-events/awards/pending/
-    Returns sourcing events currently awaiting Manager Award Decision with evaluated vendor bids.
+    Returns sourcing events for the manager awards desk:
+    - Events pending review/award (TECHNICAL_REVIEW, COMMERCIAL_REVIEW, AWARD_APPROVAL, or closed bid windows with bids)
+    - Already awarded events (AWARDED)
+    - Closed events without bids (NO_BIDS)
+    Supports query parameter ?tab=pending|awarded|closed_no_bids|all
     """
 
     permission_classes = [IsAuthenticated, IsProcurementManager]
 
     def get(self, request):
+        tab = request.query_params.get("tab", "all").strip().lower()
         org = get_user_org(request.user)
+        now = timezone.now()
+
+        target_statuses = [
+            SourcingEvent.STATUS_AWARD_APPROVAL,
+            SourcingEvent.STATUS_COMMERCIAL_REVIEW,
+            SourcingEvent.STATUS_TECHNICAL_REVIEW,
+            SourcingEvent.STATUS_AWARDED,
+            SourcingEvent.STATUS_BID_WINDOW,
+            SourcingEvent.STATUS_CANCELLED,
+        ]
+
         events = (
             SourcingEvent.objects.filter(
-                status__in=[
-                    SourcingEvent.STATUS_AWARD_APPROVAL,
-                    SourcingEvent.STATUS_COMMERCIAL_REVIEW,
-                    SourcingEvent.STATUS_TECHNICAL_REVIEW,
-                ]
+                status__in=target_statuses,
             )
             .select_related("requisition", "requisition__department", "requisition__cost_center")
             .prefetch_related(
@@ -51,6 +65,11 @@ class PendingAwardsAPIView(APIView):
                 "bids__vendor",
                 "evaluations",
                 "evaluations__evaluator",
+                "award_decisions",
+                "award_decisions__winning_bid",
+                "award_decisions__winning_bid__vendor",
+                "award_decisions__approved_by",
+                "purchase_orders",
             )
             .order_by("-updated_at")
         )
@@ -70,11 +89,52 @@ class PendingAwardsAPIView(APIView):
 
         results = []
         for event in events:
-            evaluated_bids = []
             evaluations_list = list(event.evaluations.all())
-            for bid in event.bids.all():
-                if bid.status not in [VendorBid.STATUS_SUBMITTED, VendorBid.STATUS_AMENDED]:
-                    continue
+            event_bids = list(event.bids.all())
+            submitted_bids = [
+                b for b in event_bids
+                if b.status in [VendorBid.STATUS_SUBMITTED, VendorBid.STATUS_AMENDED]
+            ]
+            has_bids = len(submitted_bids) > 0
+            is_awarded = (event.status == SourcingEvent.STATUS_AWARDED)
+
+            is_window_closed = bool(
+                (event.bid_end_date and event.bid_end_date <= now)
+                or event.status in [
+                    SourcingEvent.STATUS_TECHNICAL_REVIEW,
+                    SourcingEvent.STATUS_COMMERCIAL_REVIEW,
+                    SourcingEvent.STATUS_AWARD_APPROVAL,
+                    SourcingEvent.STATUS_AWARDED,
+                    SourcingEvent.STATUS_CANCELLED,
+                ]
+            )
+
+            if event.status == SourcingEvent.STATUS_BID_WINDOW and not is_window_closed:
+                continue
+
+            if is_awarded:
+                event_category = "awarded"
+            elif not has_bids and is_window_closed:
+                event_category = "closed_no_bids"
+            elif event.status in [
+                SourcingEvent.STATUS_AWARD_APPROVAL,
+                SourcingEvent.STATUS_COMMERCIAL_REVIEW,
+                SourcingEvent.STATUS_TECHNICAL_REVIEW,
+                SourcingEvent.STATUS_BID_WINDOW,
+            ] and has_bids:
+                event_category = "pending"
+            else:
+                continue
+
+            if tab == "pending" and event_category != "pending":
+                continue
+            elif tab == "awarded" and event_category != "awarded":
+                continue
+            elif tab == "closed_no_bids" and event_category != "closed_no_bids":
+                continue
+
+            evaluated_bids = []
+            for bid in submitted_bids:
                 eval_obj = next((e for e in evaluations_list if e.bid_id == bid.id), None)
                 evaluated_bids.append(
                     {
@@ -82,6 +142,8 @@ class PendingAwardsAPIView(APIView):
                         "bid_number": bid.bid_number,
                         "vendor_id": str(bid.vendor.id),
                         "vendor_name": bid.vendor.legal_name,
+                        "vendor_status": bid.vendor.status,
+                        "is_vendor_suspended": bid.vendor.status == Vendor.STATUS_SUSPENDED,
                         "total_bid_amount": float(bid.total_bid_amount),
                         "version": bid.version,
                         "submitted_at": bid.submitted_at.isoformat() if bid.submitted_at else None,
@@ -96,6 +158,59 @@ class PendingAwardsAPIView(APIView):
 
             evaluated_bids.sort(key=lambda b: (-b["weighted_total_score"], b["total_bid_amount"]))
 
+            award_info = None
+            if is_awarded:
+                approved_decision = (
+                    event.award_decisions.filter(status=AwardDecision.STATUS_APPROVED).order_by("-decided_at").first()
+                    or event.award_decisions.order_by("-created_at").first()
+                )
+                linked_po = event.purchase_orders.first()
+                if approved_decision:
+                    w_bid = approved_decision.winning_bid
+                    w_vendor = w_bid.vendor if w_bid else None
+                    award_info = {
+                        "decision_id": str(approved_decision.id),
+                        "decision_status": approved_decision.status,
+                        "winning_bid_id": str(w_bid.id) if w_bid else None,
+                        "winning_bid_number": w_bid.bid_number if w_bid else None,
+                        "winning_vendor_id": str(w_vendor.id) if w_vendor else None,
+                        "winning_vendor_name": w_vendor.legal_name if w_vendor else "Awarded Supplier",
+                        "winning_vendor_number": w_vendor.vendor_number if w_vendor else "",
+                        "awarded_amount": float(w_bid.total_bid_amount) if w_bid else 0.0,
+                        "awarded_at": approved_decision.decided_at.isoformat() if approved_decision.decided_at else None,
+                        "awarded_by": (
+                            approved_decision.approved_by.get_full_name()
+                            or approved_decision.approved_by.email
+                            if approved_decision.approved_by else "Procurement Manager"
+                        ),
+                        "award_reason": approved_decision.award_reason or approved_decision.decision_comments or "",
+                        "po_id": str(linked_po.id) if linked_po else None,
+                        "po_number": linked_po.po_number if linked_po else None,
+                        "po_status": linked_po.status if linked_po else None,
+                    }
+                elif evaluated_bids:
+                    top_b = evaluated_bids[0]
+                    award_info = {
+                        "winning_vendor_id": top_b["vendor_id"],
+                        "winning_vendor_name": top_b["vendor_name"],
+                        "awarded_amount": top_b["total_bid_amount"],
+                        "awarded_at": event.updated_at.isoformat() if event.updated_at else None,
+                        "awarded_by": "Procurement Manager",
+                        "award_reason": "Award approved by executive governance.",
+                        "po_id": str(linked_po.id) if linked_po else None,
+                        "po_number": linked_po.po_number if linked_po else None,
+                        "po_status": linked_po.status if linked_po else None,
+                    }
+
+            recommended_bid = None
+            if award_info and award_info.get("winning_bid_id"):
+                recommended_bid = next(
+                    (b for b in evaluated_bids if b["bid_id"] == award_info["winning_bid_id"]),
+                    evaluated_bids[0] if evaluated_bids else None,
+                )
+            elif evaluated_bids:
+                recommended_bid = evaluated_bids[0]
+
             results.append(
                 {
                     "id": str(event.id),
@@ -103,6 +218,10 @@ class PendingAwardsAPIView(APIView):
                     "title": event.title,
                     "event_type": event.event_type,
                     "status": event.status,
+                    "event_category": event_category,
+                    "is_awarded": is_awarded,
+                    "is_closed_no_bids": (event_category == "closed_no_bids"),
+                    "has_bids": has_bids,
                     "description": event.description or "",
                     "requisition_id": str(event.requisition.id) if event.requisition else None,
                     "requisition_number": (
@@ -125,10 +244,12 @@ class PendingAwardsAPIView(APIView):
                     "bid_end_date": (
                         event.bid_end_date.isoformat() if event.bid_end_date else None
                     ),
-                    "bids_count": event.bids.count(),
-                    "evaluations_count": event.evaluations.count(),
+                    "bids_count": len(event_bids),
+                    "submitted_bids_count": len(submitted_bids),
+                    "evaluations_count": len(evaluations_list),
                     "evaluated_bids": evaluated_bids,
-                    "recommended_bid": evaluated_bids[0] if evaluated_bids else None,
+                    "recommended_bid": recommended_bid,
+                    "award_decision": award_info,
                 }
             )
 
@@ -182,6 +303,7 @@ class AwardApproveAPIView(APIView):
             SourcingEvent.STATUS_AWARD_APPROVAL,
             SourcingEvent.STATUS_COMMERCIAL_REVIEW,
             SourcingEvent.STATUS_TECHNICAL_REVIEW,
+            SourcingEvent.STATUS_BID_WINDOW,
         ]:
             return Response(
                 {
@@ -192,6 +314,18 @@ class AwardApproveAPIView(APIView):
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        if event.status == SourcingEvent.STATUS_BID_WINDOW:
+            if event.bid_end_date and event.bid_end_date > timezone.now():
+                return Response(
+                    {
+                        "error": {
+                            "code": "INVALID_TRANSITION",
+                            "message": f"Bid window for {event.event_number} is still open. Bids cannot be awarded until window closes.",
+                        }
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
         action = str(request.data.get("action", "APPROVE")).upper()
         comments = str(request.data.get("comments", request.data.get("award_reason", ""))).strip()

@@ -112,6 +112,7 @@
                     <option value="COMMERCIAL_REVIEW">Commercial Review</option>
                     <option value="AWARD_APPROVAL">Award Approval</option>
                     <option value="AWARDED">Awarded</option>
+                    <option value="NO_BIDS">Closed (No Bids)</option>
                     <option value="CANCELLED">Cancelled</option>
                 </select>
             </div>
@@ -124,6 +125,7 @@
                     <option value="EVALUATION_PENDING">Evaluation Pending</option>
                     <option value="BIDDING_OPEN">Bidding Open</option>
                     <option value="AWARDED">Awarded</option>
+                    <option value="NO_BIDS">Closed without Bids</option>
                     <option value="CANCELLED">Cancelled</option>
                 </select>
             </div>
@@ -428,11 +430,16 @@
             // Award readiness badge
             let readinessBadge = '<span class="badge bg-slate-100 text-muted border">Pending</span>';
             const rCode = ev.award_readiness || 'NOT_READY';
-            if (rCode === 'READY_FOR_AWARD') {
+            const noBids = (ev.submitted_bid_count === 0 || ev.bid_count === 0);
+            if (ev.status === 'CANCELLED' && noBids) {
+                readinessBadge = '<span class="badge bg-secondary text-white"><i class="fa-solid fa-ban me-1"></i> Closed (No Bids)</span>';
+            } else if (rCode === 'READY_FOR_AWARD' && !noBids) {
                 readinessBadge = '<span class="badge bg-warning text-dark fw-bold"><i class="fa-solid fa-award me-1"></i> Ready for Award</span>';
+            } else if (rCode === 'NO_BIDS') {
+                readinessBadge = '<span class="badge bg-secondary text-white"><i class="fa-solid fa-ban me-1"></i> No Bids</span>';
             } else if (rCode === 'AWARDED') {
                 readinessBadge = '<span class="badge bg-success text-white"><i class="fa-solid fa-check-circle me-1"></i> Awarded</span>';
-            } else if (rCode === 'EVALUATION_PENDING') {
+            } else if (rCode === 'EVALUATION_PENDING' || rCode === 'TECHNICAL_REVIEW' || rCode === 'COMMERCIAL_REVIEW') {
                 readinessBadge = '<span class="badge bg-info-subtle text-info-emphasis border"><i class="fa-solid fa-spinner me-1"></i> Evaluating</span>';
             } else if (rCode === 'BIDDING_OPEN') {
                 readinessBadge = '<span class="badge bg-primary-subtle text-primary border"><i class="fa-solid fa-lock-open me-1"></i> Bidding</span>';
@@ -457,7 +464,7 @@
                     <i class="fa-solid fa-eye me-1"></i> Inspect
                 </a>
             `;
-            if (ev.status === 'AWARD_APPROVAL' || rCode === 'READY_FOR_AWARD') {
+            if (ev.status === 'AWARD_APPROVAL' && rCode === 'READY_FOR_AWARD' && !noBids) {
                 actionBtn = `
                     <div class="btn-group btn-group-sm">
                         <a href="/manager/awards/" class="btn btn-warning fw-semibold rounded-start-pill px-3">

@@ -83,7 +83,13 @@ def search_sourcing_events(queryset, params):
             | Q(invitations__vendor__vendor_number__icontains=q)
         ).distinct()
     status = params.get("status")
-    if status == "OPEN":
+    readiness = params.get("readiness")
+    if status in ("NO_BIDS", "CLOSED_NO_BIDS") or readiness in ("NO_BIDS", "CLOSED_NO_BIDS"):
+        queryset = queryset.filter(
+            status=SourcingEvent.STATUS_CANCELLED,
+            submitted_bid_count=0,
+        )
+    elif status == "OPEN":
         queryset = queryset.filter(status__in=OPEN_EVENT_STATUSES)
     elif status == "CLOSING_SOON":
         now = timezone.now()
