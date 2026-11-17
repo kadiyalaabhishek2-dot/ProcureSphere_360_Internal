@@ -63,6 +63,7 @@ class CanManageContract(permissions.BasePermission):
         return role_code in [
             Role.SUPER_ADMIN,
             Role.LEGAL_MGR,
+            Role.PROC_MGR,
         ]
 
     def has_object_permission(self, request, view, obj):
