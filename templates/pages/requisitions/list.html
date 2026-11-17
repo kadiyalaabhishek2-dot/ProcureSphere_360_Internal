@@ -22,7 +22,7 @@
             <div class="col-12 col-md-5 col-lg-5">
                 <div class="input-group">
                     <span class="input-group-text bg-light border-end-0 rounded-start-pill ps-3"><i class="fa-solid fa-magnifying-glass text-muted"></i></span>
-                    <input type="text" name="q" value="{{ search_q }}" class="form-control border-start-0 rounded-end-pill px-2" placeholder="Search by PR#, Title, or Requester..." style="height: 42px;">
+                    <input type="text" name="q" id="prSearchInput" value="{{ search_q }}" class="form-control border-start-0 rounded-end-pill px-2" placeholder="Search by PR#, Title, or Requester..." style="height: 42px;" autocomplete="off">
                 </div>
             </div>
             <div class="col-12 col-sm-6 col-md-4 col-lg-4">
@@ -219,4 +219,39 @@
         {% endif %}
     </div>
 </div>
+
+<script>
+    // Live client-side filtering for My Requisitions grid (BUG-003)
+    document.addEventListener('DOMContentLoaded', function() {
+        const searchInput = document.getElementById('prSearchInput');
+        if (!searchInput) return;
+
+        const tableRows = document.querySelectorAll('table tbody tr');
+        const mobileCards = document.querySelectorAll('.d-md-none .card');
+
+        searchInput.addEventListener('input', function() {
+            const query = this.value.trim().toLowerCase();
+
+            // Filter desktop table rows
+            tableRows.forEach(function(row) {
+                const text = row.textContent.toLowerCase();
+                if (!query || text.includes(query)) {
+                    row.style.display = '';
+                } else {
+                    row.style.display = 'none';
+                }
+            });
+
+            // Filter mobile view cards
+            mobileCards.forEach(function(card) {
+                const text = card.textContent.toLowerCase();
+                if (!query || text.includes(query)) {
+                    card.style.display = '';
+                } else {
+                    card.style.display = 'none';
+                }
+            });
+        });
+    });
+</script>
 {% endblock %}
