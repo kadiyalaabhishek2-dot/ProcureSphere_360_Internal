@@ -623,8 +623,26 @@ document.addEventListener('DOMContentLoaded', function () {
 
     // Enforce anti-cache and bfcache protection on back/forward navigation
     window.addEventListener('pageshow', function (event) {
-        // 1. If user signed out, NEVER display dashboard: redirect immediately to login!
+        // 1. If returning from an internal subpage: NEVER sign out! Stay on dashboard!
         try {
+            const hasSubpageHistory = (
+                sessionStorage.getItem('ps_visited_subpage') === 'true' ||
+                sessionStorage.getItem('ps360_active_subpage') ||
+                sessionStorage.getItem('ps_last_subpage_path')
+            );
+            if (hasSubpageHistory) {
+                // Clear any stale sign-out markers that may have been erroneously set during subpage navigation
+                sessionStorage.removeItem('ps360_user_signed_out');
+                localStorage.removeItem('ps360_user_signed_out');
+                document.cookie = "ps360_user_signed_out=; path=/; max-age=0";
+                document.cookie = "ps360_just_logged_out=; path=/; max-age=0";
+                sessionStorage.removeItem('ps_visited_subpage');
+                sessionStorage.removeItem('ps360_active_subpage');
+                sessionStorage.removeItem('ps_last_subpage_path');
+                return; // Cleanly remain on the dashboard
+            }
+
+            // 2. If user signed out, NEVER display dashboard: redirect immediately to login!
             if (sessionStorage.getItem('ps360_user_signed_out') === 'true' ||
                 localStorage.getItem('ps360_user_signed_out') ||
                 document.cookie.includes('ps360_user_signed_out=1') ||
@@ -634,7 +652,7 @@ document.addEventListener('DOMContentLoaded', function () {
             }
         } catch (e) {}
 
-        // 2. If restored from bfcache on dashboard root, redirect to login
+        // 3. If restored from bfcache on dashboard root AND user was signed out / not returning from subpage
         if (event.persisted) {
             try {
                 const currentPath = window.location.pathname.replace(/\/+$/, '') || '/';
@@ -646,12 +664,17 @@ document.addEventListener('DOMContentLoaded', function () {
                     '/vendor/dashboard', '/admin'
                 ];
                 if (dashboardRoots.includes(currentPath)) {
-                    window.location.replace('/login/?reason=signed_out');
-                    return;
+                    const isSignedOut = (
+                        sessionStorage.getItem('ps360_user_signed_out') === 'true' ||
+                        localStorage.getItem('ps360_user_signed_out') ||
+                        document.cookie.includes('ps360_user_signed_out=1')
+                    );
+                    if (isSignedOut) {
+                        window.location.replace('/login/?reason=signed_out');
+                        return;
+                    }
                 }
             } catch (err) {}
-            window.location.reload();
-            return;
         }
 
         document.querySelectorAll('form[data-submitting="true"]').forEach(function (form) {
@@ -721,6 +744,7 @@ document.addEventListener('DOMContentLoaded', function () {
             if (!onRoot) {
                 sessionStorage.setItem('ps_visited_subpage', 'true');
                 sessionStorage.setItem('ps_last_subpage_path', curPath);
+                sessionStorage.setItem('ps360_active_subpage', curPath);
             }
         } catch (e) {}
 
@@ -730,13 +754,23 @@ document.addEventListener('DOMContentLoaded', function () {
 
         // Track internal page navigation to distinguish from exiting to browser homepage
         document.addEventListener('click', function (e) {
-            const link = e.target.closest('a');
-            if (link && link.href) {
+            const link = e.target.closest('a, button, [onclick], .nav-link, .sa-nav-link, tr[data-href], .card');
+            if (link) {
+                isInternalNavigation = true;
+                setTimeout(function () { isInternalNavigation = false; }, 8000);
+            }
+            const a = e.target.closest('a');
+            if (a && a.href) {
                 try {
-                    const url = new URL(link.href, window.location.origin);
-                    if (url.origin === window.location.origin && !link.getAttribute('href').startsWith('#')) {
+                    const url = new URL(a.href, window.location.origin);
+                    if (url.origin === window.location.origin && !a.getAttribute('href').startsWith('#')) {
                         isInternalNavigation = true;
-                        setTimeout(function () { isInternalNavigation = false; }, 4000);
+                        if (!isDashboardRoot(url.pathname)) {
+                            sessionStorage.setItem('ps_visited_subpage', 'true');
+                            sessionStorage.setItem('ps360_active_subpage', url.pathname);
+                            sessionStorage.setItem('ps_last_subpage_path', url.pathname);
+                        }
+                        setTimeout(function () { isInternalNavigation = false; }, 8000);
                     }
                 } catch (err) {}
             }
@@ -744,19 +778,23 @@ document.addEventListener('DOMContentLoaded', function () {
 
         document.addEventListener('submit', function () {
             isInternalNavigation = true;
-            setTimeout(function () { isInternalNavigation = false; }, 4000);
+            setTimeout(function () { isInternalNavigation = false; }, 8000);
         }, true);
 
         document.addEventListener('htmx:configRequest', function () {
             isInternalNavigation = true;
-            setTimeout(function () { isInternalNavigation = false; }, 4000);
+            setTimeout(function () { isInternalNavigation = false; }, 8000);
         });
 
         // When user backs out or exits from dashboard root to browser homepage (e.g. Chrome newtab), auto-signout
         function handleDashboardExit() {
-            if (isDashboardRoot(window.location.pathname) && !isInternalNavigation) {
-                markUserSignedOut();
-            }
+            if (isInternalNavigation) return;
+            try {
+                if (sessionStorage.getItem('ps_visited_subpage') === 'true' ||
+                    sessionStorage.getItem('ps360_active_subpage')) {
+                    return;
+                }
+            } catch (err) {}
         }
         window.addEventListener('pagehide', handleDashboardExit);
         window.addEventListener('beforeunload', handleDashboardExit);
@@ -802,7 +840,8 @@ document.addEventListener('DOMContentLoaded', function () {
                 document.body.style.removeProperty('padding-right');
             }
             lastBackClickTime = 0;
-            if (rearm === true) {
+            // Always re-arm dashboard guard when dismissed so subsequent back clicks will show modal again
+            if (rearm !== false) {
                 rearmDashboardGuard();
             }
         }
@@ -839,7 +878,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 signoutTimerInterval = setInterval(function () {
                     remainingMs -= stepMs;
                     if (remainingMs <= 0) {
-                        dismissSignoutModal(false);
+                        dismissSignoutModal(true);
                         return;
                     }
                     const sec = Math.ceil(remainingMs / 1000);
@@ -852,13 +891,13 @@ document.addEventListener('DOMContentLoaded', function () {
 
                 // Stop timer & rearm guard if closed by user clicking "Stay on Dashboard" or modal dismissed
                 modalEl.addEventListener('hidden.bs.modal', function () {
-                    dismissSignoutModal(false);
+                    dismissSignoutModal(true);
                 }, { once: true });
 
                 const stayBtn = document.getElementById('stay-signed-in-btn');
                 if (stayBtn) {
                     stayBtn.onclick = function () {
-                        dismissSignoutModal(false);
+                        dismissSignoutModal(true);
                     };
                 }
             } else if (window.PSConfirm) {
@@ -1022,15 +1061,23 @@ document.addEventListener('DOMContentLoaded', function () {
                 // Case 4: Back navigation while on a Dashboard Root
                 let cameFromSubpage = false;
                 try {
-                    if (sessionStorage.getItem('ps_visited_subpage') === 'true') {
+                    if (sessionStorage.getItem('ps_visited_subpage') === 'true' ||
+                        sessionStorage.getItem('ps360_active_subpage') ||
+                        sessionStorage.getItem('ps_last_subpage_path')) {
                         cameFromSubpage = true;
                         sessionStorage.removeItem('ps_visited_subpage');
+                        sessionStorage.removeItem('ps360_active_subpage');
+                        sessionStorage.removeItem('ps_last_subpage_path');
                     }
                 } catch (err) {}
 
                 if (cameFromSubpage) {
                     // Just arrived back onto the dashboard root from an internal subpage:
-                    // Allow seamless return to dashboard root and arm the barrier for subsequent back clicks.
+                    // Clean up any stale sign-out markers and re-arm the barrier for subsequent back clicks.
+                    sessionStorage.removeItem('ps360_user_signed_out');
+                    localStorage.removeItem('ps360_user_signed_out');
+                    document.cookie = "ps360_user_signed_out=; path=/; max-age=0";
+                    document.cookie = "ps360_just_logged_out=; path=/; max-age=0";
                     armDashboardGuard();
                     return;
                 }

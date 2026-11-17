@@ -394,3 +394,43 @@ class TestBrowserNavigationAndSignoutGuard:
                 assert "Sign Out Confirmation" in html, f"Modal title missing on {endpoint}"
                 assert 'app.js' in html, f"app.js missing on {endpoint}"
                 assert 'session_timeout.js' in html, f"session_timeout.js missing on {endpoint}"
+
+    def test_login_exit_button_redirects_to_landing_page(self, client):
+        """Clicking Exit on the login page navigates to /?logged_out=1, clears cookies, and renders landing page."""
+        role, _ = Role.objects.get_or_create(code=Role.REQUESTER, defaults={"name": "Requester"})
+        user, _ = User.objects.get_or_create(
+            email="exit_test_user@procuresphere.com",
+            defaults={"username": "exit_test_user@procuresphere.com", "role": role, "is_active": True},
+        )
+        client.force_login(user)
+
+        # GET /?logged_out=1 terminates session and renders landing page
+        response = client.get("/?logged_out=1")
+        assert response.status_code == 200
+        content = response.content.decode("utf-8")
+        assert "ProcureSphere 360" in content
+        # Session must be logged out
+        assert "_auth_user_id" not in client.session
+
+        # Verify login template has exit button pointing to /?logged_out=1
+        with open("templates/pages/login.html", "r", encoding="utf-8") as f:
+            login_html = f.read()
+        assert 'id="login-exit-btn"' in login_html
+        assert 'href="/?logged_out=1"' in login_html
+        assert "window.location.href = '/?logged_out=1'" in login_html
+
+    def test_subpage_to_dashboard_back_navigation_bypasses_signout(self):
+        """app.js and base.html ensure that returning to dashboard from an internal subpage never signs out."""
+        with open("static/js/app.js", "r", encoding="utf-8") as f:
+            app_js = f.read()
+
+        with open("templates/base.html", "r", encoding="utf-8") as f:
+            base_html = f.read()
+
+        # Both app.js and base.html must have subpage history bypass
+        assert "hasSubpageHistory" in app_js
+        assert "hasSubpageHistory" in base_html
+        assert "ps_visited_subpage" in app_js
+        assert "ps360_active_subpage" in app_js
+        assert "dismissSignoutModal(true)" in app_js
+

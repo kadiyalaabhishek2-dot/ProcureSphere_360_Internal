@@ -40,7 +40,44 @@ def landing_home(request):
     Root URL handler.
     Forward authenticated users directly to their role-tailored dashboard (home_view).
     Anonymous visitors see the public marketing home page.
+    If explicitly exiting or logged out (?logged_out=1 or ?exit=1), ensure session is terminated.
     """
+    if request.GET.get("logged_out") or request.GET.get("exit"):
+        if request.user.is_authenticated:
+            logout(request)
+        context = {
+            'page_title': 'ProcureSphere 360 — Intelligent Enterprise Procurement Platform',
+            'page_description': (
+                'Connect requests, approvals, suppliers, sourcing, purchase orders, '
+                'invoices, contracts and financial control in one intelligent procurement platform.'
+            ),
+            'canonical_url': f'{_site_url()}/',
+            'active_nav': 'home',
+            'modules': [
+                {'name': 'Vendor Onboarding & KYC', 'detail': 'Turn supplier intake into a clear, reviewable path.', 'state': 'KYC REVIEW', 'icon': 'users', 'category': 'SOURCING'},
+                {'name': 'Vendor Master & Risk', 'detail': 'Keep supplier identity, risk and ownership in view.', 'state': 'ACTIVE', 'icon': 'shield', 'category': 'GOVERNANCE'},
+                {'name': 'Purchase Requisition', 'detail': 'Capture intent with policy and budget context.', 'state': 'MANAGER REVIEW', 'icon': 'file', 'category': 'PURCHASING'},
+                {'name': 'Approval Policy Engine', 'detail': 'Route decisions to the right owner at the right time.', 'state': 'BUDGET REVIEW', 'icon': 'check', 'category': 'GOVERNANCE'},
+                {'name': 'RFQ / RFP Sourcing', 'detail': 'Create a transparent path from need to market.', 'state': 'BID WINDOW', 'icon': 'search', 'category': 'SOURCING'},
+                {'name': 'Vendor Bid Portal (sealed bids)', 'detail': 'Keep submissions structured and comparable.', 'state': 'PUBLISHED', 'icon': 'layers', 'category': 'SOURCING'},
+                {'name': 'Evaluation & Award', 'detail': 'Turn technical and commercial review into a decision.', 'state': 'AWARD APPROVAL', 'icon': 'activity', 'category': 'SOURCING'},
+                {'name': 'Purchase Orders & Amendments', 'detail': 'Make committed intent visible to every team.', 'state': 'ACKNOWLEDGED', 'icon': 'file', 'category': 'PURCHASING'},
+                {'name': 'Receipt & Inspection', 'detail': 'Connect arrival, inspection and acceptance.', 'state': 'PARTIAL RECEIPT', 'icon': 'check', 'category': 'PURCHASING'},
+                {'name': 'Invoice & 3-Way Match', 'detail': 'Resolve exceptions before they become delays.', 'state': '3-WAY MATCH', 'icon': 'finance', 'category': 'FINANCE'},
+                {'name': 'Contract Lifecycle', 'detail': 'Keep obligations and renewal decisions visible.', 'state': 'RENEWAL DUE', 'icon': 'file', 'category': 'GOVERNANCE'},
+                {'name': 'Budget & Spend Control', 'detail': 'Show how a decision changes the financial picture.', 'state': 'RESERVED', 'icon': 'finance', 'category': 'FINANCE'},
+                {'name': 'Supplier Performance', 'detail': 'Make health and collaboration measurable.', 'state': 'ACTIVE', 'icon': 'activity', 'category': 'SOURCING'},
+                {'name': 'Reports & Audit Trail', 'detail': 'Give every important action a structured place.', 'state': 'ACTIVE', 'icon': 'shield', 'category': 'GOVERNANCE'},
+            ],
+            'testimonials': [
+                {'quote': 'A connected procurement experience should make the next decision obvious, not add another system to navigate.', 'role': 'Procurement leader', 'note': 'Illustrative perspective'},
+            ],
+        }
+        response = render(request, 'landing/home.html', context)
+        response.delete_cookie("ps360_user_signed_out")
+        response.delete_cookie("ps360_just_logged_out")
+        return response
+
     if request.user.is_authenticated:
         from apps.core.views import home_view
         return home_view(request)
