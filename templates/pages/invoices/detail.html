@@ -391,7 +391,12 @@
                     <div class="mb-3"><strong>Total Amount:</strong> <span class="text-success fw-bold">₹{{ invoice.total_amount|floatformat:2 }}</span></div>
                     <div class="mb-3">
                         <label for="detail_pref" class="form-label small fw-semibold text-dark">Transaction Reference / UTR # <span class="text-danger">*</span></label>
-                        <input type="text" name="payment_reference" id="detail_pref" class="form-control" placeholder="e.g. UTR-2026-981023" required>
+                        <input type="text" name="payment_reference" id="detail_pref" class="form-control" placeholder="e.g. UTR-2026-981023"
+                               pattern="^[A-Za-z0-9][A-Za-z0-9\-_/]{4,48}[A-Za-z0-9]$"
+                               minlength="6" maxlength="50"
+                               title="Alphanumeric reference or UTR (6-50 chars). Hyphens (-) and slashes (/) permitted. Disallowed special characters like !@#$%^&*() are prohibited."
+                               required>
+                        <div class="form-text small text-muted">Format: 6–50 alphanumeric characters (e.g. UTR-2026-981023, CMS123456789). No special characters (!@#$%).</div>
                     </div>
                     <div class="mb-3">
                         <label for="detail_pmeth" class="form-label small fw-semibold text-dark">Payment Method <span class="text-danger">*</span></label>
@@ -419,4 +424,17 @@
 </div>
 {% endif %}
 
+<script>
+    // BUG-006: Lock background scrolling to eliminate dual overlapping vertical scrollbars on modals
+    document.querySelectorAll('.modal').forEach(function(modalEl) {
+        modalEl.addEventListener('show.bs.modal', function() {
+            document.body.style.overflow = 'hidden';
+            document.documentElement.style.overflow = 'hidden';
+        });
+        modalEl.addEventListener('hidden.bs.modal', function() {
+            document.body.style.overflow = '';
+            document.documentElement.style.overflow = '';
+        });
+    });
+</script>
 {% endblock %}
