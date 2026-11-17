@@ -394,3 +394,33 @@ class TestBrowserNavigationAndSignoutGuard:
                 assert "Sign Out Confirmation" in html, f"Modal title missing on {endpoint}"
                 assert 'app.js' in html, f"app.js missing on {endpoint}"
                 assert 'session_timeout.js' in html, f"session_timeout.js missing on {endpoint}"
+
+    def test_internal_navigation_guard_prevents_false_signout(self, client):
+        """Internal navigation sets tracking flags and clears residual exit tokens to prevent false signouts."""
+        with open("static/js/app.js", "r", encoding="utf-8") as f:
+            app_js = f.read()
+
+        assert "markInternalNav" in app_js
+        assert "ps_is_internal_navigation" in app_js
+        assert "pointerdown" in app_js
+
+        with open("templates/base.html", "r", encoding="utf-8") as f:
+            base_html = f.read()
+
+        assert "ps_is_internal_navigation" in base_html
+
+        role, _ = Role.objects.get_or_create(code=Role.DEPT_APPROVER, defaults={"name": "Department Approver"})
+        user, _ = User.objects.get_or_create(
+            email="approver_nav_guard_test@procuresphere.com",
+            defaults={"username": "approver_nav_guard_test@procuresphere.com", "role": role, "is_active": True},
+        )
+        client.force_login(user)
+
+        # Department PRs page loads cleanly
+        resp_dept = client.get("/approver/department-prs/")
+        assert resp_dept.status_code == 200
+
+        # Navigating to Pending Approvals queue retains active authentication
+        resp_inbox = client.get("/approvals/inbox/?status=PENDING")
+        assert resp_inbox.status_code == 200
+        assert "_auth_user_id" in client.session

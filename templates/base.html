@@ -32,7 +32,13 @@
         // Forward navigation & bfcache anti-tamper guard: if user backed out / exited, block dashboard restoration
         (function() {
             try {
-                if (sessionStorage.getItem('ps360_user_signed_out') === 'true' ||
+                if (sessionStorage.getItem('ps_is_internal_navigation') === 'true') {
+                    sessionStorage.removeItem('ps_is_internal_navigation');
+                    sessionStorage.removeItem('ps360_user_signed_out');
+                    localStorage.removeItem('ps360_user_signed_out');
+                    document.cookie = "ps360_user_signed_out=; path=/; max-age=0";
+                    document.cookie = "ps360_just_logged_out=; path=/; max-age=0";
+                } else if (sessionStorage.getItem('ps360_user_signed_out') === 'true' ||
                     localStorage.getItem('ps360_user_signed_out') ||
                     document.cookie.indexOf('ps360_user_signed_out=1') !== -1) {
                     window.location.replace('/login/?reason=signed_out');
