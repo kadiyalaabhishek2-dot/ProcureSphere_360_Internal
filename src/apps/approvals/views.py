@@ -357,8 +357,12 @@ def approvals_inbox_view(request):
                 else:
                     status_filter = ""
 
-        pending_prs = pending_prs.order_by("-updated_at")
-        history_prs = history_prs.order_by("-updated_at")
+        pending_prs = pending_prs.select_related(
+            "requester", "department", "cost_center", "department__organization"
+        ).order_by("-updated_at")
+        history_prs = history_prs.select_related(
+            "requester", "department", "cost_center", "department__organization"
+        ).order_by("-updated_at")
 
         pending_count = pending_prs.count()
         has_budget_overrun = pending_prs.filter(status="BUDGET_REVIEW").exists()
