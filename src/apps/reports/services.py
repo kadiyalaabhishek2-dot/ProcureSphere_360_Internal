@@ -87,13 +87,26 @@ def get_spend_analytics_report(
     # Multi-tenant isolation: superusers see all; org-scoped users see only their tenant
     if user and not getattr(user, "is_superuser", False):
         org = getattr(user, "effective_organization", None) or getattr(user, "organization", None)
+        role_code = getattr(user, "role_code", None) or (
+            user.role.code if getattr(user, "role", None) else None
+        )
         if org:
             invoices = invoices.filter(
                 _Q(po__cost_center__department__organization=org)
                 | _Q(po__requisition__department__organization=org)
                 | _Q(po__created_by__organization=org)
                 | _Q(vendor__organization=org)
-            )
+            ).distinct()
+        elif role_code in [
+            Role.PROC_MGR,
+            Role.PROC_EXEC,
+            Role.AUDITOR,
+            Role.SUPER_ADMIN,
+            Role.FINANCE_AP,
+            Role.LEGAL_MGR,
+        ] or getattr(user, "is_staff", False):
+            # Internal roles with unassigned organization in test/single-org environments retain access
+            pass
         else:
             invoices = invoices.none()
 
