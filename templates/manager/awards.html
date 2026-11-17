@@ -812,6 +812,8 @@
         const actionType = document.getElementById('modalActionType').value;
         const commentsInput = document.getElementById('modalAwardComments');
         const comments = (commentsInput.value || '').trim();
+        // DEF-002 fix: declare errAlert/errAlertText once at function scope to prevent
+        // "Identifier 'errAlert' has already been declared" SyntaxError in strict-mode browsers
         const errAlert = document.getElementById('modalErrorAlert');
         const errAlertText = document.getElementById('modalErrorAlertText');
         const commentsFeedback = document.getElementById('modalAwardCommentsFeedback');
@@ -862,8 +864,7 @@
                 : (err && err.message ? err.message : 'Failed to process award decision.');
             const errorMsg = (typeof cleanErrorString === 'function') ? cleanErrorString(rawMsg) : rawMsg;
 
-            const errAlert = document.getElementById('modalErrorAlert');
-            const errAlertText = document.getElementById('modalErrorAlertText');
+            // errAlert and errAlertText already declared above — no re-declaration needed
             if (errAlert && errAlertText) {
                 errAlertText.textContent = errorMsg;
                 errAlert.classList.remove('d-none');
