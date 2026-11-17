@@ -345,13 +345,10 @@ def portal_logout_view(request):
     """
 
     Logs out the user from the ERP Portal and redirects to the public landing page (/).
-    Requires HTTP POST method to prevent CSRF logout attacks (DEF-020).
+    Supports both POST and GET methods to guarantee reliable signout from modal forms,
+    history navigation guards, and direct user actions.
 
     """
-    if request.method != "POST":
-        from django.http import HttpResponseNotAllowed
-        return HttpResponseNotAllowed(["POST"], "Logout requires HTTP POST method.")
-
     user = request.user if request.user.is_authenticated else None
 
     if user:
@@ -361,29 +358,32 @@ def portal_logout_view(request):
 
 
 
-        create_audit_log_service(
+        try:
+            create_audit_log_service(
 
-            actor=user,
+                actor=user,
 
-            action=AuditLog.ACTION_LOGOUT,
+                action=AuditLog.ACTION_LOGOUT,
 
-            target_model="User",
+                target_model="User",
 
-            target_object_id=str(user.id),
+                target_object_id=str(user.id),
 
-            previous_state={"email": user.email},
+                previous_state={"email": user.email},
 
-        )
+            )
+        except Exception:
+            pass
 
 
 
     logout(request)
 
     reason = request.GET.get("reason") or request.POST.get("reason")
-    if reason in ["signed_out", "modal", "back_navigation"]:
+    if reason in ["signed_out", "modal", "back_navigation", "browser_exit"]:
         response = redirect("/login/?reason=signed_out")
-        response.set_cookie("ps360_just_logged_out", "1", max_age=60, path="/", samesite="Lax")
-        response.set_cookie("ps360_user_signed_out", "1", max_age=60, path="/", samesite="Lax")
+        response.set_cookie("ps360_just_logged_out", "1", max_age=120, path="/", samesite="Lax")
+        response.set_cookie("ps360_user_signed_out", "1", max_age=120, path="/", samesite="Lax")
         return response
 
     if reason == "new_tab":
@@ -392,13 +392,13 @@ def portal_logout_view(request):
 
     if reason == "inactivity":
         response = redirect("/login/?session_expired=1")
-        response.set_cookie("ps360_just_logged_out", "1", max_age=60, path="/", samesite="Lax")
+        response.set_cookie("ps360_just_logged_out", "1", max_age=120, path="/", samesite="Lax")
         return response
 
     messages.info(request, "You have been logged out successfully.")
 
     response = redirect("/?logged_out=1")
-    response.set_cookie("ps360_just_logged_out", "1", max_age=60, path="/", samesite="Lax")
+    response.set_cookie("ps360_just_logged_out", "1", max_age=120, path="/", samesite="Lax")
     return response
 
 

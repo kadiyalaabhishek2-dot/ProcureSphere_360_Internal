@@ -18,6 +18,7 @@ EXEMPT_PREFIXES = (
 SESSION_LAST_ACTIVITY_KEY = "_last_activity_ts"
 DEFAULT_IDLE_TIMEOUT_SECONDS = 300
 TIMEOUT_EXEMPT_PATHS = {
+    "/",
     "/login",
     "/logout",
     "/admin/login",
@@ -86,8 +87,11 @@ class SessionIdleTimeoutMiddleware:
         is_exempt = path in TIMEOUT_EXEMPT_PATHS or path.startswith(TIMEOUT_EXEMPT_PREFIXES)
 
         # Check if user backed out / exited to Chrome homepage: terminate session on forward navigation
-        has_signout_cookie = request.COOKIES.get("ps360_user_signed_out") == "1"
-        if has_signout_cookie and not is_exempt:
+        has_signout_cookie = (
+            request.COOKIES.get("ps360_user_signed_out") == "1"
+            or request.COOKIES.get("ps360_just_logged_out") == "1"
+        )
+        if has_signout_cookie and not is_exempt and path != "/":
             if user is not None and user.is_authenticated:
                 logout(request)
             response = redirect("/login/?reason=signed_out")
