@@ -148,8 +148,12 @@ def portal_login_view(request):
                 except Exception:
                     change_url = reverse("change_password")
                 if is_ajax:
-                    return JsonResponse({"ok": True, "redirect": change_url})
-                return redirect(change_url)
+                    response = JsonResponse({"ok": True, "redirect": change_url})
+                else:
+                    response = redirect(change_url)
+                response.delete_cookie("ps360_just_logged_out")
+                response.delete_cookie("ps360_user_signed_out")
+                return response
 
             next_url = request.GET.get("next") or request.POST.get("next")
             if next_url and not url_has_allowed_host_and_scheme(
@@ -162,8 +166,12 @@ def portal_login_view(request):
                 next_url = get_dashboard_url_for_user(user)
 
             if is_ajax:
-                return JsonResponse({"ok": True, "redirect": next_url})
-            return redirect(next_url)
+                response = JsonResponse({"ok": True, "redirect": next_url})
+            else:
+                response = redirect(next_url)
+            response.delete_cookie("ps360_just_logged_out")
+            response.delete_cookie("ps360_user_signed_out")
+            return response
 
         else:
             from apps.accounts.models import User

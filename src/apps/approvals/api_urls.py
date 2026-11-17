@@ -85,21 +85,11 @@ class ApprovalActionFilter(django_filters.FilterSet):
     target_model = django_filters.CharFilter(
         field_name="target_model_name", lookup_expr="icontains"
     )
-    target_object_id = django_filters.CharFilter(method="filter_target_object_id")
+    target_object_id = django_filters.UUIDFilter(field_name="target_object_id")
 
     class Meta:
         model = ApprovalAction
         fields = ["status", "action", "target_model_name", "target_object_id"]
-
-    def filter_target_object_id(self, queryset, name, value):
-        if not value:
-            return queryset
-        import uuid
-        try:
-            val_uuid = uuid.UUID(str(value).strip())
-            return queryset.filter(target_object_id=val_uuid)
-        except (ValueError, AttributeError):
-            return queryset.none()
 
 
 class ApprovalPolicyViewSet(viewsets.ModelViewSet):
@@ -179,18 +169,40 @@ class ApprovalActionViewSet(viewsets.ReadOnlyModelViewSet):
         qs = super().get_queryset()
         if not user or not user.is_authenticated:
             return qs.none()
-        if user.is_superuser:
-            return qs
 
+        import uuid
         from django.db.models import Q
-        user_org = getattr(user, "effective_organization", None) or getattr(user, "organization", None)
-        if not user_org:
-            return qs.filter(actor=user)
 
-        return qs.filter(
-            Q(actor__organization=user_org)
-            | Q(policy_step__policy__organization=user_org)
-        )
+        # 1. Multi-tenant & organization isolation for non-superusers
+        if not user.is_superuser:
+            user_org = getattr(user, "effective_organization", None) or getattr(user, "organization", None)
+            if not user_org:
+                qs = qs.filter(actor=user)
+            else:
+                qs = qs.filter(
+                    Q(actor__organization=user_org)
+                    | Q(actor__department__organization=user_org)
+                    | Q(policy_step__policy__organization=user_org)
+                    | Q(policy_step__policy__department__organization=user_org)
+                    | Q(actor=user)
+                )
+
+        # 2. Database queryset-level filtering for target_object_id
+        target_obj_id = self.request.query_params.get("target_object_id")
+        if target_obj_id:
+            raw_id = str(target_obj_id).strip()
+            try:
+                val_uuid = uuid.UUID(raw_id)
+                qs = qs.filter(target_object_id=val_uuid)
+            except (ValueError, AttributeError):
+                return qs.none()
+
+        # 3. Optional target_model filtering if provided
+        target_model = self.request.query_params.get("target_model") or self.request.query_params.get("target_model_name")
+        if target_model:
+            qs = qs.filter(target_model_name__icontains=str(target_model).strip())
+
+        return qs
 
     def _check_approver_authorization(self, request):
         user = request.user

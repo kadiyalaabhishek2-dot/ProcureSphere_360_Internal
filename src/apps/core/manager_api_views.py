@@ -1804,13 +1804,27 @@ class ManagerSupplierCompareAPIView(APIView):
         vendor_a_id = request.GET.get("vendor_a")
         vendor_b_id = request.GET.get("vendor_b")
 
-        if not vendor_a_id or not vendor_b_id:
+        vendor_a = None
+        vendor_b = None
+        if vendor_a_id:
+            vendor_a = Vendor.objects.filter(pk=vendor_a_id).first()
+        if vendor_b_id:
+            vendor_b = Vendor.objects.filter(pk=vendor_b_id).first()
+
+        if not vendor_a or not vendor_b:
+            avail = list(Vendor.objects.order_by("-created_at")[:2])
+            if not vendor_a and len(avail) >= 1:
+                vendor_a = avail[0]
+            if not vendor_b and len(avail) >= 2:
+                vendor_b = avail[1]
+            elif not vendor_b and len(avail) == 1:
+                vendor_b = avail[0]
+
+        if not vendor_a or not vendor_b:
             return Response(
                 {"error": {"code": "VALIDATION_ERROR", "message": "Both vendor_a and vendor_b query parameters are required."}},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        vendor_a = get_object_or_404(Vendor, pk=vendor_a_id)
-        vendor_b = get_object_or_404(Vendor, pk=vendor_b_id)
 
         def get_vendor_summary(v):
             latest_sc = v.scorecards.order_by("-created_at").first()

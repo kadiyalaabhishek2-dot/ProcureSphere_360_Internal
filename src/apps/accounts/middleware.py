@@ -96,7 +96,7 @@ class SessionIdleTimeoutMiddleware:
                 logout(request)
             response = redirect("/login/?reason=signed_out")
             response.delete_cookie("ps360_user_signed_out")
-            response.set_cookie("ps360_just_logged_out", "1", max_age=60, path="/", samesite="Lax")
+            response.delete_cookie("ps360_just_logged_out")
             return response
 
         if user is None or not user.is_authenticated:
