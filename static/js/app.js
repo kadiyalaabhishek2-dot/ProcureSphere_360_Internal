@@ -1082,7 +1082,9 @@ document.addEventListener('DOMContentLoaded', function () {
                     return;
                 }
 
-                // Case 5: User is on the Dashboard Root and clicks Back (or double clicks / clicks repeatedly)
+                // Case 5: User is on the Dashboard Root and clicks Back:
+                // Per requirement: Signout must ONLY happen if the user explicitly clicks "Sign Out" in the modal.
+                // NEVER auto-signout on back button click or rapid clicking.
                 const now = Date.now();
                 const timeDiff = now - lastBackClickTime;
                 lastBackClickTime = now;
@@ -1094,15 +1096,6 @@ document.addEventListener('DOMContentLoaded', function () {
                     modalEl.getAttribute('data-ps-active') === 'true'
                 );
 
-                if ((timeDiff > 0 && timeDiff < 2500) || isModalOpen) {
-                    // Double-click detected (within 2.5 seconds) OR modal was already open!
-                    // User explicitly insists on exiting -> auto sign out immediately!
-                    markUserSignedOut();
-                    performSignout('/login/?reason=signed_out');
-                    return;
-                }
-
-                // First back click on dashboard root: Re-push guard barrier and show confirmation modal
                 rearmDashboardGuard();
 
                 if (modalEl) {

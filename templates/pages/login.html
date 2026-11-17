@@ -849,7 +849,7 @@
                     sessionStorage.removeItem('ps360_active_subpage');
                     sessionStorage.removeItem('ps_last_subpage_path');
                     document.cookie = "ps360_user_signed_out=; path=/; max-age=0";
-                    document.cookie = "ps360_just_logged_out=1; path=/; max-age=60; SameSite=Lax";
+                    document.cookie = "ps360_just_logged_out=; path=/; max-age=0";
                 } catch (err) { }
                 window.location.href = '/?logged_out=1';
             });

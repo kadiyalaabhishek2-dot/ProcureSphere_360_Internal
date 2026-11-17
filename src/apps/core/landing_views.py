@@ -42,7 +42,11 @@ def landing_home(request):
     Anonymous visitors see the public marketing home page.
     If explicitly exiting or logged out (?logged_out=1 or ?exit=1), ensure session is terminated.
     """
-    if request.GET.get("logged_out") or request.GET.get("exit"):
+    has_signout_cookie = (
+        request.COOKIES.get("ps360_user_signed_out") == "1"
+        or request.COOKIES.get("ps360_just_logged_out") == "1"
+    )
+    if request.GET.get("logged_out") or request.GET.get("exit") or has_signout_cookie:
         if request.user.is_authenticated:
             logout(request)
         context = {
