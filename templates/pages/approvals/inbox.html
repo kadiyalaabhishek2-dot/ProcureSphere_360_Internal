@@ -83,13 +83,13 @@
             {% if active_tab == 'history' %}
                 <input type="hidden" name="tab" value="history">
             {% endif %}
-            <div class="col-12 col-md-6 col-lg-7">
+            <div class="col-12 col-md-5 col-lg-5">
                 <div class="input-group">
                     <span class="input-group-text bg-white border-end-0 text-muted"><i class="fa-solid fa-search"></i></span>
                     <input type="text" name="q" class="form-control border-start-0 ps-0" placeholder="{% if is_legal_inbox %}Search by contract #, title, or vendor...{% else %}Search by PR #, title, requester email...{% endif %}" value="{{ search_q|default:'' }}">
                 </div>
             </div>
-            <div class="col-12 col-sm-8 col-md-4 col-lg-3">
+            <div class="col-12 col-sm-6 col-md-4 col-lg-4">
                 <select name="status" class="form-select text-secondary fw-medium" style="background-image: url(&quot;data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%23475569' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='m2 5 6 6 6-6'/%3e%3c/svg%3e&quot;) !important; background-repeat: no-repeat !important; background-position: right 0.85rem center !important; background-size: 16px 12px !important; padding-right: 2.25rem !important;">
                     <option value="">-- All Statuses --</option>
                     {% if is_legal_inbox %}
@@ -122,10 +122,10 @@
                     {% endif %}
                 </select>
             </div>
-            <div class="col-12 col-sm-4 col-md-2 col-lg-2 d-flex gap-2">
-                <button type="submit" class="btn btn-primary w-100 rounded-3 text-nowrap"><i class="fa-solid fa-filter me-1"></i> Filter</button>
+            <div class="col-12 col-sm-6 col-md-3 col-lg-3 d-flex gap-2">
+                <button type="submit" class="btn btn-primary rounded-3 text-nowrap flex-grow-1"><i class="fa-solid fa-filter me-1"></i> Filter</button>
                 {% if search_q or status_filter %}
-                    <a href="{% if active_tab == 'history' %}?tab=history{% else %}/approvals/inbox/{% endif %}" class="btn btn-outline-secondary rounded-3 text-nowrap d-inline-flex align-items-center" title="Clear Filters">
+                    <a href="{% if active_tab == 'history' %}?tab=history{% else %}/approvals/inbox/{% endif %}" class="btn btn-outline-secondary rounded-3 text-nowrap d-inline-flex align-items-center px-3" title="Clear Filters">
                         <i class="fa-solid fa-xmark me-1"></i> Reset
                     </a>
                 {% endif %}

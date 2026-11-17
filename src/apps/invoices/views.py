@@ -8,8 +8,6 @@ from django.db.models import Q
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 
-logger = logging.getLogger(__name__)
-
 from apps.accounts.models import Role
 from apps.invoices.models import MatchException, MatchTolerancePolicy, SupplierInvoice
 from apps.invoices.services import (
@@ -26,6 +24,8 @@ from apps.receipts.models import GoodsReceipt
 from apps.vendors.models import Vendor
 
 from .selectors import scope_invoices_queryset
+
+logger = logging.getLogger(__name__)
 
 INTERNAL_INVOICE_ROLES = [
     Role.FINANCE_AP,
@@ -572,8 +572,15 @@ def create_invoice_view(request):
             return redirect("invoices_list")
 
         except ValidationError as ve:
-            if hasattr(ve, "messages") and ve.messages:
-                err_msg = ve.messages[0]
+            if hasattr(ve, "message_dict") and ve.message_dict:
+                messages_list = []
+                for field, field_errs in ve.message_dict.items():
+                    field_label = field.replace("_", " ").title() if field != "__all__" else "Validation Error"
+                    for err in field_errs:
+                        messages_list.append(f"{field_label}: {err}")
+                err_msg = " ".join(messages_list)
+            elif hasattr(ve, "messages") and ve.messages:
+                err_msg = " ".join(str(m) for m in ve.messages)
             elif hasattr(ve, "message"):
                 err_msg = ve.message
             else:
