@@ -845,8 +845,8 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path="issue")
     def issue(self, request, pk=None):
         """APPROVED -> ISSUED. Notifies the vendor and requester."""
-        base_qs = scope_purchase_orders_queryset(self.queryset, request.user)
-        po = get_object_or_404(base_qs, pk=pk)
+        # DEF-007: Standardize lookup through get_object() to ensure uniform scoping and state checks
+        po = self.get_object()
         return self._run_lifecycle_action(
             issue_purchase_order_service, po=po, actor=request.user
         )
