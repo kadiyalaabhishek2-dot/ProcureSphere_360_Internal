@@ -27,6 +27,16 @@ def notify_users(*, users, notification_type: str, title: str, message: str, tar
 
 def notify_vendor_users(*, vendor, notification_type: str, title: str, message: str, target_url=""):
     """Notifies every portal user linked to the given vendor."""
+    from apps.vendors.models import Vendor
+
+    if vendor and getattr(vendor, "status", None) == Vendor.STATUS_SUSPENDED and notification_type in (
+        Notification.TYPE_RFQ_INVITATION,
+        Notification.TYPE_PO_ISSUED,
+        Notification.TYPE_PO_AMENDMENT,
+        Notification.TYPE_BID_DEADLINE,
+    ):
+        return []
+
     users = User.objects.filter(vendor=vendor, is_active=True)
     return notify_users(
         users=users,

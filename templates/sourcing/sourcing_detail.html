@@ -26,7 +26,7 @@
         <a href="{% url 'sourcing_list' %}" class="btn btn-outline-secondary rounded-pill px-3"><i class="fa-solid fa-arrow-left me-1"></i>Register</a>
         {% endif %}
         {% if caps.can_manage %}
-            {% if event.status == 'DRAFT' %}
+            {% if event.status == 'DRAFT' and caps.can_publish %}
                 <a href="{% url 'sourcing_edit' event.id %}" class="btn btn-outline-primary rounded-pill px-3"><i class="fa-solid fa-pen me-1"></i>Edit draft</a>
                 <form method="post" action="{% url 'sourcing_action' event.id 'publish' %}">{% csrf_token %}
                     <button class="btn btn-warning text-dark fw-bold rounded-pill px-3" {% if publish_errors %}disabled title="Resolve publish checks first"{% endif %}><i class="fa-solid fa-bullhorn me-1"></i>Publish</button>

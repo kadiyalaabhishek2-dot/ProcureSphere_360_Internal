@@ -100,7 +100,7 @@ def get_dashboard_url_for_user(user):
         Role.FINANCE_AP: "/finance/",
         Role.STORES_RECEIVER: "/stores/",
         Role.LEGAL_MGR: "/legal/",
-        Role.AUDITOR: "/audit/dashboard/",
+        Role.AUDITOR: "/auditor/",
         Role.VENDOR_USER: "/vendor/",
     }
     return role_url_map.get(role_code, "/requester/")

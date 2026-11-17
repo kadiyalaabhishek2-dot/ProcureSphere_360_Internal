@@ -122,7 +122,7 @@ class ContractSerializer(serializers.ModelSerializer):
                 title__iexact=str(title).strip(),
                 start_date=start_date,
                 end_date=end_date,
-            ).exists():
+            ).exclude(status__in=[Contract.STATUS_TERMINATED, Contract.STATUS_DRAFT]).exists():
                 raise serializers.ValidationError(
                     {"title": ["A contract with the same title, vendor, and term dates already exists."]}
                 )

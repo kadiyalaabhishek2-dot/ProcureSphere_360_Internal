@@ -89,13 +89,13 @@ def create_contract_service(
     if renewal_notice_days is not None and renewal_notice_days <= 0:
         raise ValidationError("Renewal notice period must be a positive number of days.")
 
-    # Prevent duplicate contracts with identical title, vendor, and term dates (DEF-018)
+    # Prevent duplicate contracts with identical title, vendor, and term dates (DEF-018 / TC-CON-053)
     if Contract.objects.filter(
         vendor=vendor,
         title__iexact=title.strip(),
         start_date=start_date,
         end_date=end_date,
-    ).exists():
+    ).exclude(status__in=[Contract.STATUS_TERMINATED, Contract.STATUS_DRAFT]).exists():
         raise ValidationError(
             f"A contract with title '{title.strip()}' for vendor '{vendor.legal_name}' with the same start and end dates already exists."
         )

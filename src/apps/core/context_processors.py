@@ -24,6 +24,12 @@ def layout_context(request):
         role_code = getattr(user, "role_code", None) or (
             user.role.code if hasattr(user, "role") and user.role else None
         )
+        from_param = request.GET.get("from", "").strip().lower()
+        referer = request.headers.get("referer", "").lower()
+        is_from_manager = from_param == "manager" or "/manager/" in referer
+        if is_from_manager and (user.is_superuser or role_code in [Role.SUPER_ADMIN, "SUPER_ADMIN", "ADMIN", Role.PROC_MGR, "PROC_MGR"]):
+            return {"base_layout": "manager/base_manager.html"}
+
         if user.is_superuser or role_code in [Role.SUPER_ADMIN, "SUPER_ADMIN", "ADMIN"]:
             return {"base_layout": "layouts/superadmin_base.html"}
         elif role_code in [Role.PROC_MGR, "PROC_MGR"]:
