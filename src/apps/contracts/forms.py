@@ -1,3 +1,4 @@
+from decimal import Decimal
 from django import forms
 
 from apps.orders.models import PurchaseOrder
@@ -5,6 +6,37 @@ from apps.sourcing.models import SourcingEvent
 from apps.vendors.models import Vendor
 
 from .models import Contract, ContractDocument, ContractMilestone, ContractObligation
+
+# Sensible enterprise financial limits for contract agreements
+MAX_CONTRACT_VALUE = Decimal("1000000000.00")  # ₹1 Billion / 100 Crore enterprise ceiling
+MIN_CONTRACT_VALUE = Decimal("0.01")
+
+
+def validate_contract_value_amount(val):
+    """
+    Validates that contract financial values adhere to strict financial ERP business rules:
+    1. Must be greater than zero.
+    2. Cannot exceed the maximum corporate ceiling of ₹1,000,000,000.00 (1 Billion).
+    3. Rejects repetitive dummy digit sequences (e.g., 111111, 111111111, 999999999).
+    """
+    if val is None:
+        return val
+    if val <= Decimal("0.00"):
+        raise forms.ValidationError("Contract value must be greater than zero.")
+    if val > MAX_CONTRACT_VALUE:
+        raise forms.ValidationError(
+            f"Contract value cannot exceed ₹{MAX_CONTRACT_VALUE:,.2f} (1 Billion). Please enter a realistic enterprise contract amount."
+        )
+    # Reject dummy repeating digits sequences (e.g. 111111, 111111111, 999999999)
+    try:
+        val_int_str = str(int(val))
+        if len(val_int_str) >= 6 and len(set(val_int_str)) == 1:
+            raise forms.ValidationError(
+                "Contract value cannot be a repeating sequence of identical digits (e.g., 111111111). Please enter a valid financial amount."
+            )
+    except (ValueError, TypeError):
+        pass
+    return val
 
 
 class VendorContractChoiceField(forms.ModelChoiceField):
@@ -61,7 +93,13 @@ class ContractCreateForm(forms.ModelForm):
                 }
             ),
             "contract_value": forms.NumberInput(
-                attrs={"class": "form-control", "step": "0.01", "placeholder": "0.00"}
+                attrs={
+                    "class": "form-control",
+                    "step": "0.01",
+                    "min": "0.01",
+                    "max": "1000000000.00",
+                    "placeholder": "0.00",
+                }
             ),
             "start_date": forms.DateInput(attrs={"class": "form-control", "type": "date"}),
             "end_date": forms.DateInput(attrs={"class": "form-control", "type": "date"}),
@@ -70,11 +108,19 @@ class ContractCreateForm(forms.ModelForm):
             ),
         }
 
+    def clean_title(self):
+        title = (self.cleaned_data.get("title") or "").strip()
+        if len(title) < 5:
+            raise forms.ValidationError("Contract title must be at least 5 characters long.")
+        if len(set(title.lower())) == 1 and len(title) >= 5:
+            raise forms.ValidationError(
+                "Contract title cannot be a repeating sequence of identical characters (e.g., 111111). Please enter a meaningful title."
+            )
+        return title
+
     def clean_contract_value(self):
         val = self.cleaned_data.get("contract_value")
-        if val is not None and val <= 0:
-            raise forms.ValidationError("Contract value must be greater than zero.")
-        return val
+        return validate_contract_value_amount(val)
 
     def clean(self):
         cleaned_data = super().clean()
@@ -100,7 +146,11 @@ class ContractAmendmentForm(forms.Form):
     contract_value = forms.DecimalField(
         max_digits=14,
         decimal_places=2,
-        widget=forms.NumberInput(attrs={"class": "form-control", "step": "0.01"}),
+        min_value=MIN_CONTRACT_VALUE,
+        max_value=MAX_CONTRACT_VALUE,
+        widget=forms.NumberInput(
+            attrs={"class": "form-control", "step": "0.01", "min": "0.01", "max": "1000000000.00"}
+        ),
         required=True,
     )
     start_date = forms.DateField(
@@ -112,9 +162,7 @@ class ContractAmendmentForm(forms.Form):
 
     def clean_contract_value(self):
         val = self.cleaned_data.get("contract_value")
-        if val is not None and val <= 0:
-            raise forms.ValidationError("Contract value must be greater than zero.")
-        return val
+        return validate_contract_value_amount(val)
 
     def clean(self):
         cleaned_data = super().clean()
@@ -218,7 +266,11 @@ class ContractRenewalForm(forms.Form):
     new_value = forms.DecimalField(
         max_digits=14,
         decimal_places=2,
-        widget=forms.NumberInput(attrs={"class": "form-control", "step": "0.01"}),
+        min_value=MIN_CONTRACT_VALUE,
+        max_value=MAX_CONTRACT_VALUE,
+        widget=forms.NumberInput(
+            attrs={"class": "form-control", "step": "0.01", "min": "0.01", "max": "1000000000.00"}
+        ),
         required=False,
     )
     notes = forms.CharField(
@@ -231,3 +283,9 @@ class ContractRenewalForm(forms.Form):
         ),
         required=False,
     )
+
+    def clean_new_value(self):
+        val = self.cleaned_data.get("new_value")
+        if val is not None:
+            return validate_contract_value_amount(val)
+        return val

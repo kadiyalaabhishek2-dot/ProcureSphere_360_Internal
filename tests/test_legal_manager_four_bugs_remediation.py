@@ -259,3 +259,56 @@ class TestLegalManagerFourBugsRemediation:
         assert "overflow-wrap: anywhere" in content
         assert "word-break: break-all" in content
         assert "overflow: hidden" in content
+
+    def test_contract_form_financial_limits_and_repetitive_number_rejection(self, org_and_roles):
+        """Validates that ContractCreateForm enforces maximum financial ceilings and rejects dummy repeating numbers."""
+        cat = org_and_roles["cat"]
+        org = org_and_roles["org"]
+
+        vendor = Vendor.objects.create(
+            legal_name="Financial Test Vendor",
+            vendor_number="VND-FIN-01",
+            tax_identification_number="TAX-FIN-01",
+            category=cat,
+            organization=org,
+            status=Vendor.STATUS_ACTIVE,
+        )
+
+        base_data = {
+            "title": "Corporate Network Maintenance SLA",
+            "vendor": vendor.id,
+            "start_date": str(date.today()),
+            "end_date": str(date.today() + timedelta(days=365)),
+            "renewal_notice_days": 30,
+        }
+
+        # 1. Reject value exceeding ₹1 Billion ceiling (e.g., 100 Billion)
+        data_excessive = base_data.copy()
+        data_excessive["contract_value"] = "100000000000.00"
+        form_excessive = ContractCreateForm(data=data_excessive)
+        assert not form_excessive.is_valid()
+        assert "contract_value" in form_excessive.errors
+        assert "cannot exceed" in form_excessive.errors["contract_value"][0]
+
+        # 2. Reject repeating sequence of 9 identical digits (e.g. 111111111)
+        data_repeating = base_data.copy()
+        data_repeating["contract_value"] = "111111111.00"
+        form_repeating = ContractCreateForm(data=data_repeating)
+        assert not form_repeating.is_valid()
+        assert "contract_value" in form_repeating.errors
+        assert "repeating sequence" in form_repeating.errors["contract_value"][0]
+
+        # 3. Reject title with repeating characters (e.g. 111111)
+        data_bad_title = base_data.copy()
+        data_bad_title["title"] = "111111"
+        data_bad_title["contract_value"] = "500000.00"
+        form_bad_title = ContractCreateForm(data=data_bad_title)
+        assert not form_bad_title.is_valid()
+        assert "title" in form_bad_title.errors
+        assert "repeating sequence" in form_bad_title.errors["title"][0]
+
+        # 4. Accept valid financial value within limits (e.g. ₹5,000,000.00)
+        data_valid = base_data.copy()
+        data_valid["contract_value"] = "5000000.00"
+        form_valid = ContractCreateForm(data=data_valid)
+        assert form_valid.is_valid(), form_valid.errors
