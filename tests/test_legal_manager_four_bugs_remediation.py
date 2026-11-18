@@ -218,3 +218,44 @@ class TestLegalManagerFourBugsRemediation:
         assert "text-break" in content
         assert "word-break: break-word" in content
         assert "word-break: break-all" in content
+
+    def test_legal_dashboard_kpi_total_contract_value_overflow_protection(self, client, org_and_roles):
+        """Validates that Total Contract Value KPI card in Legal Dashboard uses fluid font sizing, intcomma, and overflow containment."""
+        legal_user = org_and_roles["legal_user"]
+        cat = org_and_roles["cat"]
+        org = org_and_roles["org"]
+
+        vendor = Vendor.objects.create(
+            legal_name="Mega Supplier Inc",
+            vendor_number="VND-MEGA-01",
+            tax_identification_number="TAX-MEGA-01",
+            category=cat,
+            organization=org,
+            status=Vendor.STATUS_ACTIVE,
+        )
+
+        # Create large value contract (100 Billion)
+        Contract.objects.create(
+            contract_number="CON-TEST-MEGA-01",
+            title="Mega Enterprise SLA",
+            vendor=vendor,
+            contract_owner=legal_user,
+            contract_value=Decimal("100057850100.00"),
+            status=Contract.STATUS_ACTIVE,
+            start_date=date.today(),
+            end_date=date.today() + timedelta(days=365),
+            renewal_notice_days=30,
+        )
+
+        client.force_login(legal_user)
+        dashboard_url = reverse("legal_dashboard")
+        response = client.get(dashboard_url)
+        assert response.status_code == 200
+        content = response.content.decode("utf-8")
+
+        # Must format with commas and include fluid clamp and text-break
+        assert "100,057,850,100.00" in content
+        assert "clamp(0.95rem, 1.25vw, 1.45rem)" in content
+        assert "overflow-wrap: anywhere" in content
+        assert "word-break: break-all" in content
+        assert "overflow: hidden" in content
