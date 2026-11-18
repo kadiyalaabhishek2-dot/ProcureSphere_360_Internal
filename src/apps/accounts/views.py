@@ -1,3 +1,5 @@
+import time
+
 from django.contrib import messages
 from django.contrib.auth import authenticate, login, logout, update_session_auth_hash
 from django.contrib.auth.decorators import login_required
@@ -17,6 +19,31 @@ def portal_login_view(request):
     to prevent terminating active sessions.
     """
     if request.user.is_authenticated:
+        reason = request.GET.get("reason", "").strip().lower()
+        if (
+            reason in ["signed_out", "logged_out", "back_navigation", "logout", "another_tab", "inactivity"]
+            or request.COOKIES.get("ps360_just_logged_out") == "1"
+            or request.COOKIES.get("ps360_user_signed_out") == "1"
+        ):
+            logout(request)
+            context = {}
+            if reason == "another_tab":
+                context["session_expired_notice"] = (
+                    "Your account was signed into in another tab or window. This session has been closed for security."
+                )
+            elif reason in ["inactivity", "session_expired"]:
+                context["session_expired_notice"] = (
+                    "Your session timed out after 5 minutes of inactivity. Please sign in again."
+                )
+            else:
+                context["session_expired_notice"] = (
+                    "You have been signed out of your session."
+                )
+            response = render(request, "pages/login.html", context)
+            response.delete_cookie("ps360_just_logged_out")
+            response.delete_cookie("ps360_user_signed_out")
+            return response
+
         from apps.core.views import get_dashboard_url_for_user
 
         next_url = request.GET.get("next")
@@ -72,6 +99,7 @@ def portal_login_view(request):
 
 
             login(request, user)
+            request.session["_last_activity_ts"] = time.time()
 
 
 
@@ -120,8 +148,12 @@ def portal_login_view(request):
                 except Exception:
                     change_url = reverse("change_password")
                 if is_ajax:
-                    return JsonResponse({"ok": True, "redirect": change_url})
-                return redirect(change_url)
+                    response = JsonResponse({"ok": True, "redirect": change_url})
+                else:
+                    response = redirect(change_url)
+                response.delete_cookie("ps360_just_logged_out")
+                response.delete_cookie("ps360_user_signed_out")
+                return response
 
             next_url = request.GET.get("next") or request.POST.get("next")
             if next_url and not url_has_allowed_host_and_scheme(
@@ -134,13 +166,38 @@ def portal_login_view(request):
                 next_url = get_dashboard_url_for_user(user)
 
             if is_ajax:
-                return JsonResponse({"ok": True, "redirect": next_url})
-            return redirect(next_url)
+                response = JsonResponse({"ok": True, "redirect": next_url})
+            else:
+                response = redirect(next_url)
+            response.delete_cookie("ps360_just_logged_out")
+            response.delete_cookie("ps360_user_signed_out")
+            return response
 
         else:
             from apps.accounts.models import User
 
             inactive_user = User.objects.filter(email__iexact=email).first()
+
+            try:
+                from apps.audit.models import AuditLog
+                from apps.audit.services import create_audit_log_service
+
+                matched_user = User.objects.filter(email__iexact=str(email).strip()).first()
+                create_audit_log_service(
+                    actor=matched_user,
+                    action=AuditLog.ACTION_LOGIN_FAILED,
+                    target_model="User",
+                    target_object_id=str(matched_user.id if matched_user else email),
+                    new_state={
+                        "event": "LOGIN_FAILED",
+                        "email": str(email).strip().lower(),
+                        "reason": "Account deactivated" if (inactive_user and not inactive_user.is_active) else "Invalid credentials",
+                    },
+                    request=request,
+                )
+            except Exception:
+                pass
+
             if (
                 inactive_user
                 and inactive_user.check_password(password)
@@ -158,7 +215,29 @@ def portal_login_view(request):
 
 
 
-    return render(request, "pages/login.html")
+    context = {}
+    reason = request.GET.get("reason", "").strip().lower()
+    has_signout_cookie = (
+        request.COOKIES.get("ps360_just_logged_out") == "1"
+        or request.COOKIES.get("ps360_user_signed_out") == "1"
+    )
+    if reason == "another_tab":
+        context["session_expired_notice"] = (
+            "Your account was signed into in another tab or window. This session has been closed for security."
+        )
+    elif reason == "inactivity" or request.GET.get("session_expired") == "1":
+        context["session_expired_notice"] = (
+            "Your session timed out after 5 minutes of inactivity. Please sign in again."
+        )
+    elif reason in ["signed_out", "logged_out", "back_navigation", "logout"] or has_signout_cookie:
+        context["session_expired_notice"] = (
+            "You have been signed out of your session."
+        )
+    response = render(request, "pages/login.html", context)
+    if has_signout_cookie:
+        response.delete_cookie("ps360_just_logged_out")
+        response.delete_cookie("ps360_user_signed_out")
+    return response
 
 
 
@@ -266,13 +345,10 @@ def portal_logout_view(request):
     """
 
     Logs out the user from the ERP Portal and redirects to the public landing page (/).
-    Requires HTTP POST method to prevent CSRF logout attacks (DEF-020).
+    Supports both POST and GET methods to guarantee reliable signout from modal forms,
+    history navigation guards, and direct user actions.
 
     """
-    if request.method != "POST":
-        from django.http import HttpResponseNotAllowed
-        return HttpResponseNotAllowed(["POST"], "Logout requires HTTP POST method.")
-
     user = request.user if request.user.is_authenticated else None
 
     if user:
@@ -282,32 +358,47 @@ def portal_logout_view(request):
 
 
 
-        create_audit_log_service(
+        try:
+            create_audit_log_service(
 
-            actor=user,
+                actor=user,
 
-            action=AuditLog.ACTION_LOGOUT,
+                action=AuditLog.ACTION_LOGOUT,
 
-            target_model="User",
+                target_model="User",
 
-            target_object_id=str(user.id),
+                target_object_id=str(user.id),
 
-            previous_state={"email": user.email},
+                previous_state={"email": user.email},
 
-        )
+            )
+        except Exception:
+            pass
 
 
 
     logout(request)
 
-    if request.GET.get("reason") == "new_tab":
+    reason = request.GET.get("reason") or request.POST.get("reason")
+    if reason in ["signed_out", "modal", "back_navigation", "browser_exit"]:
+        response = redirect("/login/?reason=signed_out")
+        response.set_cookie("ps360_just_logged_out", "1", max_age=120, path="/", samesite="Lax")
+        response.set_cookie("ps360_user_signed_out", "1", max_age=120, path="/", samesite="Lax")
+        return response
+
+    if reason == "new_tab":
         messages.info(request, "Your previous session expired due to multiple active tabs. Please sign in again.")
         return redirect("/login/?session_expired=1")
+
+    if reason == "inactivity":
+        response = redirect("/login/?session_expired=1")
+        response.set_cookie("ps360_just_logged_out", "1", max_age=120, path="/", samesite="Lax")
+        return response
 
     messages.info(request, "You have been logged out successfully.")
 
     response = redirect("/?logged_out=1")
-    response.set_cookie("ps360_just_logged_out", "1", max_age=60, path="/", samesite="Lax")
+    response.set_cookie("ps360_just_logged_out", "1", max_age=120, path="/", samesite="Lax")
     return response
 
 

@@ -7,7 +7,7 @@ from django.utils import timezone
 from apps.accounts.models import Role, User
 from apps.approvals.models import ApprovalAction, ApprovalPolicy
 from apps.approvals.services import add_approval_step_service, create_approval_policy_service
-from apps.budgets.models import BudgetReservation, SpendLedger
+from apps.budgets.models import Budget, BudgetReservation, SpendLedger
 from apps.budgets.services import allocate_budget_service
 from apps.organization.models import CostCenter, Department, FiscalPeriod, Organization
 from apps.requisitions.models import PurchaseRequisition
@@ -214,6 +214,17 @@ def test_pr_creation_fails_when_budget_exceeded(db_roles):
 
     assert pr.status == PurchaseRequisition.STATUS_DRAFT
 
-    pr = submit_purchase_requisition_service(requisition=pr, user=user)
+    # Case 1: When allow_overspend is False (default), PR submission fails closed with ValidationError
+    with pytest.raises(ValidationError) as exc_info:
+        submit_purchase_requisition_service(requisition=pr, user=user)
+    assert "Insufficient budget" in str(exc_info.value)
+    pr.refresh_from_db()
+    assert pr.status == PurchaseRequisition.STATUS_DRAFT
 
+    # Case 2: When cost center allows overspend exception routing, PR moves to BUDGET_REVIEW
+    budget = Budget.objects.get(cost_center=cost_center, fiscal_period=period)
+    budget.allow_overspend = True
+    budget.save(update_fields=["allow_overspend"])
+
+    pr = submit_purchase_requisition_service(requisition=pr, user=user)
     assert pr.status == PurchaseRequisition.STATUS_BUDGET_REVIEW

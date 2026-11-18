@@ -91,6 +91,27 @@
                 </button>
             </form>
             {% endif %}
+        {% elif budget_overspend_blocked and can_reject %}
+            <span class="d-inline-flex gap-2 flex-grow-1 flex-md-grow-0" data-bs-toggle="tooltip" title="Budget overspend is disabled for Cost Center {{ pr.cost_center.code }} (Hard Budget Stop). Either top up budget in Budget Overview or reject this exception.">
+                <button type="button" class="btn btn-secondary rounded-pill shadow-sm px-4 fw-bold text-dark w-100 opacity-50" disabled style="cursor: not-allowed;">
+                    <i class="fa-solid fa-ban me-2 text-danger"></i>Overspend Blocked
+                </button>
+            </span>
+            <form method="POST" action="{% url 'requisition_reject' pr.pk %}" class="d-inline-flex gap-2 flex-grow-1 flex-md-grow-0" onsubmit="this.querySelector('input[name=comments]').value = (document.getElementById('decisionCommentsSidebarBudget')?.value || 'Budget Rejected').trim()">
+                {% csrf_token %}
+                <input type="hidden" name="comments" value="Budget Rejected">
+                <button type="submit" class="btn btn-danger rounded-pill shadow-sm px-4 fw-bold w-100">
+                    <i class="fa-solid fa-times me-2"></i>Reject Exception
+                </button>
+            </form>
+        {% elif can_reject %}
+            <form method="POST" action="{% url 'requisition_reject' pr.pk %}" class="d-inline-flex gap-2 flex-grow-1 flex-md-grow-0" onsubmit="this.querySelector('input[name=comments]').value = (document.getElementById('decisionCommentsSidebar')?.value || 'Budget Overrun Rejected').trim()">
+                {% csrf_token %}
+                <input type="hidden" name="comments" value="Budget Overrun Rejected">
+                <button type="submit" class="btn btn-outline-danger rounded-pill shadow-sm px-4 fw-bold w-100">
+                    <i class="fa-solid fa-times me-2"></i>Reject Out-of-Budget PR
+                </button>
+            </form>
         {% elif user_has_approved and pr.status in 'SUBMITTED,MANAGER_REVIEW' %}
             <div class="d-inline-flex align-items-center bg-success bg-opacity-10 border border-success border-opacity-25 rounded-pill px-3 py-1">
                 <i class="fa-solid fa-circle-check text-success me-2"></i>
@@ -132,10 +153,17 @@
             {% if role_code != 'REQUESTER' and available_budget != None %}(<strong>₹{{ available_budget|floatformat:2 }}</strong> remaining){% endif %}
             for Cost Center <strong>{{ pr.cost_center.code }} - {{ pr.cost_center.name }}</strong>.
         </p>
+        {% if budget_overspend_blocked %}
+        <div class="mt-2 p-2.5 bg-danger bg-opacity-10 rounded-3 border border-danger border-opacity-25 text-danger small">
+            <i class="fa-solid fa-ban me-1 fw-bold"></i>
+            <strong>Hard Budget Stop Active:</strong> Cost Center <strong>{{ pr.cost_center.code }}</strong> has overspend disabled (<code>allow_overspend = False</code>). Approval is blocked by financial governance policy. To proceed, you must either <strong>Reject Exception</strong> or allocate additional funds under Budget Overview.
+        </div>
+        {% else %}
         <div class="small text-muted">
-            <i class="fa-solid fa-shield-halved me-1 text-danger"></i> Requires Procurement Manager budget exception approval
+            <i class="fa-solid fa-shield-halved me-1 text-danger"></i> Requires Procurement Manager or Finance AP budget exception approval
             before proceeding.
         </div>
+        {% endif %}
     </div>
 </div>
 {% endif %}
@@ -261,12 +289,21 @@
                 <span class="fw-bold small text-dark d-block">PO Issued</span>
                 <span class="badge bg-success-subtle text-success border border-success-subtle rounded-pill" style="font-size: 0.65rem;">PO Created</span>
                 {% elif pr.status == 'SOURCING' or latest_sourcing or pr.sourcing_events.exists %}
+                {% if latest_sourcing and latest_sourcing.status == 'CANCELLED' and not latest_sourcing.bids.exists %}
+                <div class="bg-secondary text-white rounded-circle d-flex align-items-center justify-content-center mx-auto mb-2 shadow-sm"
+                    style="width: 44px; height: 44px;">
+                    <i class="fa-solid fa-ban"></i>
+                </div>
+                <span class="fw-bold small text-dark d-block">No Bids</span>
+                <span class="badge bg-secondary-subtle text-secondary border border-secondary-subtle rounded-pill" style="font-size: 0.65rem;">No Bids Received</span>
+                {% else %}
                 <div class="bg-info text-white rounded-circle d-flex align-items-center justify-content-center mx-auto mb-2 shadow-sm"
                     style="width: 44px; height: 44px;">
                     <i class="fa-solid fa-gavel"></i>
                 </div>
                 <span class="fw-bold small text-dark d-block">In Sourcing</span>
                 <span class="badge bg-info-subtle text-info border border-info-subtle rounded-pill" style="font-size: 0.65rem;">RFQ Active</span>
+                {% endif %}
                 {% elif pr.status == 'APPROVED' %}
                 <div class="bg-primary text-white rounded-circle d-flex align-items-center justify-content-center mx-auto mb-2 shadow-sm"
                     style="width: 44px; height: 44px;">
@@ -410,6 +447,8 @@
                                 class="btn btn-sm btn-outline-secondary rounded-pill px-3 flex-fill flex-sm-grow-0 text-center"
                                 title="View {{ attachment.title }}"
                                 data-doc-title="{{ attachment.title }}"
+                                data-doc-ext="{{ attachment.file_extension|default:'' }}"
+                                data-doc-filename="{{ attachment.file.name|default:'' }}"
                                 data-doc-size="{{ attachment.file_size|filesizeformat }}"
                                 data-doc-date="{{ attachment.created_at|date:'M d, Y H:i' }}"
                                 data-doc-view-url="{% url 'requisition_attachment_download' pr.pk attachment.pk %}?action=view"
@@ -603,10 +642,17 @@
                         <span class="badge bg-info-subtle text-info border border-info-subtle rounded-pill px-2.5 py-1 small fw-semibold">
                             <i class="fa-solid fa-gavel me-1"></i> Sourcing Event
                         </span>
+                        {% if latest_sourcing.status == 'CANCELLED' and not latest_sourcing.bids.exists %}
+                        <span class="badge bg-secondary rounded-pill">Closed (No Bids)</span>
+                        {% else %}
                         <span class="badge bg-secondary rounded-pill">{{ latest_sourcing.get_status_display }}</span>
+                        {% endif %}
                     </div>
                     <div class="fw-bold font-monospace fs-6 mb-1">{{ latest_sourcing.event_number }}</div>
                     <div class="small text-muted mb-2">{{ latest_sourcing.title|truncatechars:40 }}</div>
+                    {% if latest_sourcing.status == 'CANCELLED' and not latest_sourcing.bids.exists %}
+                    <div class="small text-danger fw-semibold"><i class="fa-solid fa-triangle-exclamation me-1"></i>No bids were received during the sourcing window.</div>
+                    {% endif %}
                 </div>
                 {% endif %}
             </div>
@@ -653,6 +699,38 @@
                 </div>
             </div>
             {% endif %}
+        {% elif budget_overspend_blocked and can_reject %}
+            <div id="approvalActionDecision" class="card border-danger border-2 shadow-sm rounded-4 mb-4 bg-danger bg-opacity-10">
+                <div class="card-body p-4">
+                    <h6 class="fw-bold text-danger mb-2">
+                        <i class="fa-solid fa-ban text-danger me-2"></i>Hard Budget Stop Active
+                    </h6>
+                    <p class="small text-muted mb-3">Cost Center <strong>{{ pr.cost_center.code }}</strong> has overspend disabled (<code>allow_overspend = False</code>). Approval is prohibited. Enter rejection remarks below.</p>
+                    <div class="mb-0">
+                        <label for="decisionCommentsSidebarBudget" class="form-label small fw-semibold text-dark">Rejection Justification</label>
+                        <textarea id="decisionCommentsSidebarBudget" name="comments" class="form-control form-control-sm bg-white" rows="3"
+                            placeholder="Reason for rejecting this over-budget requisition..."></textarea>
+                    </div>
+                </div>
+            </div>
+        {% elif can_reject %}
+            <div id="approvalActionDecision" class="card border-danger border-2 shadow-sm rounded-4 mb-4 bg-danger bg-opacity-10">
+                <div class="card-body p-4">
+                    <h6 class="fw-bold text-dark mb-2">
+                        <i class="fa-solid fa-ban text-danger me-2"></i>Budget Governance Rejection
+                    </h6>
+                    <p class="small text-muted mb-3">This purchase requisition exceeds available cost center budget limits. As Procurement Manager, you may inspect the transaction and reject the request.</p>
+
+                    <div class="mb-0">
+                        <label for="decisionCommentsSidebar" class="form-label small fw-semibold text-dark">Rejection Justification (Mandatory)</label>
+                        <textarea id="decisionCommentsSidebar" name="comments" class="form-control form-control-sm bg-white" rows="3"
+                            placeholder="Provide reason for rejecting this out-of-budget PR..."></textarea>
+                        <div class="form-text small text-muted mt-1">
+                            <i class="fa-solid fa-info-circle me-1"></i>Remarks will be recorded in the audit trail when you click Reject Out-of-Budget PR above.
+                        </div>
+                    </div>
+                </div>
+            </div>
         {% elif user_has_approved and pr.status in 'SUBMITTED,MANAGER_REVIEW' %}
             <div class="card border-success border-opacity-25 shadow-sm rounded-4 mb-4 bg-success bg-opacity-10">
                 <div class="card-body p-4 text-center">
@@ -860,16 +938,26 @@ function openPrDocPreview(btn) {
     const uploaded = btn.getAttribute("data-doc-date") || "";
     const viewUrl = btn.getAttribute("data-doc-view-url") || "#";
     const downloadUrl = btn.getAttribute("data-doc-download-url") || viewUrl;
+    const docExt = (btn.getAttribute("data-doc-ext") || "").toLowerCase().trim();
+    const filename = (btn.getAttribute("data-doc-filename") || "").toLowerCase().trim();
 
     document.getElementById("prDocPreviewTitle").textContent = title;
     document.getElementById("prDocPreviewMeta").textContent = [size, uploaded ? ("Uploaded " + uploaded) : ""].filter(Boolean).join(" • ");
     document.getElementById("prDocDownloadBtn").setAttribute("href", downloadUrl);
 
     const bodyEl = document.getElementById("prDocPreviewBody");
-    const ext = title.split(".").pop().toLowerCase();
-    if (["png", "jpg", "jpeg", "gif", "webp"].includes(ext)) {
-        bodyEl.innerHTML = `<div class="p-4 text-center"><img src="${viewUrl}" alt="" class="img-fluid rounded shadow-sm" style="max-height: 70vh;"></div>`;
-    } else if (["pdf", "txt", "csv"].includes(ext)) {
+    let ext = docExt;
+    if (!ext && filename.includes(".")) {
+        ext = filename.split(".").pop().toLowerCase();
+    }
+    if (!ext && title.includes(".")) {
+        ext = title.split(".").pop().toLowerCase();
+    }
+    if (!ext) ext = "pdf";
+
+    if (["png", "jpg", "jpeg", "gif", "webp", "svg"].includes(ext)) {
+        bodyEl.innerHTML = `<div class="p-4 text-center"><img src="${viewUrl}" alt="${title}" class="img-fluid rounded shadow-sm" style="max-height: 70vh;"></div>`;
+    } else if (["pdf", "txt", "csv", "log"].includes(ext)) {
         bodyEl.innerHTML = `<iframe src="${viewUrl}" title="${title}" class="w-100 border-0" style="height: 72vh;"></iframe>`;
     } else {
         bodyEl.innerHTML = `
@@ -883,7 +971,7 @@ function openPrDocPreview(btn) {
             </div>
         `;
     }
-    new bootstrap.Modal(document.getElementById("prDocumentPreviewModal")).show();
+    bootstrap.Modal.getOrCreateInstance(document.getElementById("prDocumentPreviewModal")).show();
 }
 </script>
 {% endblock %}

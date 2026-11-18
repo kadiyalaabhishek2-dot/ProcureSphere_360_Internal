@@ -100,7 +100,7 @@ def get_dashboard_url_for_user(user):
         Role.FINANCE_AP: "/finance/",
         Role.STORES_RECEIVER: "/stores/",
         Role.LEGAL_MGR: "/legal/",
-        Role.AUDITOR: "/audit/dashboard/",
+        Role.AUDITOR: "/auditor/",
         Role.VENDOR_USER: "/vendor/",
     }
     return role_url_map.get(role_code, "/requester/")
@@ -224,13 +224,77 @@ def finance_dashboard_view(request):
     from apps.notifications.models import Notification
     from apps.organization.models import CostCenter, Department
 
-    selected_dept_id = request.GET.get("dept") or ""
-    selected_cc_id = request.GET.get("cost_center") or ""
+    raw_dept = (
+        request.GET.get("dept")
+        or request.GET.get("department")
+        or request.GET.get("department_id")
+        or ""
+    ).strip()
+    raw_cc = (
+        request.GET.get("cost_center")
+        or request.GET.get("cost_center_id")
+        or request.GET.get("cc")
+        or ""
+    ).strip()
 
     scoped_org = getattr(request.user, "effective_organization", None) if not (request.user.is_superuser and not request.user.organization_id) else None
 
     departments = Department.objects.all().order_by("name")
     cost_centers = CostCenter.objects.select_related("department").all().order_by("code")
+
+    if scoped_org:
+        departments = departments.filter(organization=scoped_org)
+        cost_centers = cost_centers.filter(department__organization=scoped_org)
+
+    # Resolve department identifier (UUID, code, or name)
+    selected_dept_obj = None
+    selected_dept_id = ""
+    if raw_dept:
+        import uuid
+
+        is_dept_uuid = False
+        try:
+            uuid.UUID(str(raw_dept))
+            is_dept_uuid = True
+        except (ValueError, AttributeError, TypeError):
+            is_dept_uuid = False
+
+        if is_dept_uuid:
+            selected_dept_obj = departments.filter(id=raw_dept).first()
+        if not selected_dept_obj:
+            selected_dept_obj = departments.filter(
+                Q(code__iexact=raw_dept) | Q(name__iexact=raw_dept)
+            ).first()
+
+        if selected_dept_obj:
+            selected_dept_id = str(selected_dept_obj.id)
+        else:
+            selected_dept_id = "00000000-0000-0000-0000-000000000000"
+
+    # Resolve cost center identifier (UUID, code, or name)
+    selected_cc_obj = None
+    selected_cc_id = ""
+    if raw_cc:
+        import uuid
+
+        is_cc_uuid = False
+        try:
+            uuid.UUID(str(raw_cc))
+            is_cc_uuid = True
+        except (ValueError, AttributeError, TypeError):
+            is_cc_uuid = False
+
+        if is_cc_uuid:
+            selected_cc_obj = cost_centers.filter(id=raw_cc).first()
+        if not selected_cc_obj:
+            selected_cc_obj = cost_centers.filter(
+                Q(code__iexact=raw_cc) | Q(name__iexact=raw_cc)
+            ).first()
+
+        if selected_cc_obj:
+            selected_cc_id = str(selected_cc_obj.id)
+        else:
+            selected_cc_id = "00000000-0000-0000-0000-000000000000"
 
     open_match_exceptions = (
         MatchException.objects.filter(status=MatchException.STATUS_OPEN)
@@ -311,8 +375,6 @@ def finance_dashboard_view(request):
     actual_spend_qs = SpendLedger.objects.filter(entry_type=SpendLedger.ENTRY_ACTUAL)
 
     if scoped_org:
-        departments = departments.filter(organization=scoped_org)
-        cost_centers = cost_centers.filter(department__organization=scoped_org)
         open_match_exceptions = open_match_exceptions.filter(
             Q(invoice__po__cost_center__department__organization=scoped_org)
             | Q(invoice__po__requisition__department__organization=scoped_org)
@@ -339,21 +401,27 @@ def finance_dashboard_view(request):
         )
 
     all_cost_centers = list(cost_centers)
-    if selected_dept_id:
-        filtered_cost_centers = [cc for cc in all_cost_centers if str(cc.department_id) == str(selected_dept_id)]
+    if selected_dept_obj:
+        filtered_cost_centers = [cc for cc in all_cost_centers if cc.department_id == selected_dept_obj.id]
     else:
         filtered_cost_centers = all_cost_centers
 
     if selected_dept_id:
-        open_budget_exceptions = open_budget_exceptions.filter(department_id=selected_dept_id)
-        pending_finance_prs = pending_finance_prs.filter(department_id=selected_dept_id)
+        open_budget_exceptions = open_budget_exceptions.filter(
+            Q(department_id=selected_dept_id) | Q(cost_center__department_id=selected_dept_id)
+        ).distinct()
+        pending_finance_prs = pending_finance_prs.filter(
+            Q(department_id=selected_dept_id) | Q(cost_center__department_id=selected_dept_id)
+        ).distinct()
         open_match_exceptions = open_match_exceptions.filter(
             Q(invoice__po__cost_center__department_id=selected_dept_id)
             | Q(invoice__po__requisition__department_id=selected_dept_id)
+            | Q(invoice__po__requisition__cost_center__department_id=selected_dept_id)
         ).distinct()
         ready_for_payment_qs = ready_for_payment_qs.filter(
             Q(po__cost_center__department_id=selected_dept_id)
             | Q(po__requisition__department_id=selected_dept_id)
+            | Q(po__requisition__cost_center__department_id=selected_dept_id)
         ).distinct()
         committed_spend_qs = committed_spend_qs.filter(
             budget__cost_center__department_id=selected_dept_id
@@ -387,33 +455,32 @@ def finance_dashboard_view(request):
         actual_spend_qs.aggregate(total=Sum("amount"))["total"] or 0
     )
 
-    selected_dept_obj = None
-    if selected_dept_id:
-        selected_dept_obj = next((d for d in departments if str(d.id) == str(selected_dept_id)), None)
-
-    selected_cc_obj = None
-    if selected_cc_id:
-        selected_cc_obj = next((c for c in all_cost_centers if str(c.id) == str(selected_cc_id)), None)
-
     user_org_name = scoped_org.name if scoped_org else ("Global Enterprise" if request.user.is_superuser else "")
+
+    total_pending_exceptions = open_match_exceptions.count()
+    from django.core.paginator import Paginator
+    exceptions_paginator = Paginator(open_match_exceptions, 10)
+    page_num = request.GET.get("page", 1)
+    exceptions_page = exceptions_paginator.get_page(page_num)
 
     context = {
         "metrics": {
-            "pending_match_exceptions": open_match_exceptions.count(),
+            "pending_match_exceptions": total_pending_exceptions,
             "pending_budget_exceptions": open_budget_exceptions.count(),
             "pending_pr_approvals": pending_finance_prs.count(),
             "ready_for_payment": ready_for_payment_qs.count(),
             "committed_spend": float(committed_spend),
             "actual_spend": float(actual_spend),
         },
-        "open_match_exceptions": open_match_exceptions[:10],
+        "open_match_exceptions": exceptions_page,
+        "match_exceptions_page": exceptions_page,
         "open_budget_exceptions": open_budget_exceptions[:10],
         "pending_finance_prs": pending_finance_prs[:10],
         "departments": departments,
         "cost_centers": filtered_cost_centers,
         "all_cost_centers": all_cost_centers,
-        "selected_dept_id": selected_dept_id,
-        "selected_cc_id": selected_cc_id,
+        "selected_dept_id": selected_dept_id if selected_dept_obj else "",
+        "selected_cc_id": selected_cc_id if selected_cc_obj else "",
         "selected_dept_obj": selected_dept_obj,
         "selected_cc_obj": selected_cc_obj,
         "user_org_name": user_org_name,
@@ -566,13 +633,27 @@ def approver_dashboard_view(request):
             "Dashboard figures are limited until an administrator assigns your scope.",
         )
 
+    user_org = getattr(user, "organization", None) or (
+        user_department.organization if user_department else None
+    )
     if user_department:
+        depts_with_approvers = Department.objects.filter(
+            organization=user_org,
+            users__role__code=Role.DEPT_APPROVER,
+            users__is_active=True,
+        ).exclude(id=user_department.id)
+
         dept_prs = PurchaseRequisition.objects.filter(
-            Q(department=user_department) | Q(cost_center__manager=user)
+            Q(department=user_department)
+            | Q(cost_center__manager=user)
+            | (
+                Q(department__organization=user_org)
+                & ~Q(department__in=depts_with_approvers)
+            )
         ).exclude(status=PurchaseRequisition.STATUS_DRAFT).distinct()
-    elif getattr(user, "organization", None):
+    elif user_org:
         dept_prs = PurchaseRequisition.objects.filter(
-            Q(department__organization=user.organization) | Q(cost_center__manager=user)
+            Q(department__organization=user_org) | Q(cost_center__manager=user)
         ).exclude(status=PurchaseRequisition.STATUS_DRAFT).distinct()
     else:
         dept_prs = PurchaseRequisition.objects.none()
@@ -607,14 +688,17 @@ def approver_dashboard_view(request):
     else:
         has_open_period = FiscalPeriod.objects.filter(period_filter).exists()
 
-    if getattr(user, "department_id", None):
-        dept_ccs = CostCenter.objects.filter(department_id=user.department_id)
-    elif user_department:
+    if user_department:
         dept_ccs = CostCenter.objects.filter(
-            Q(department=user_department) | Q(manager=user)
+            Q(department=user_department)
+            | Q(manager=user)
+            | (
+                Q(department__organization=user_org)
+                & ~Q(department__in=depts_with_approvers)
+            )
         ).distinct()
-    elif getattr(user, "organization", None):
-        dept_ccs = CostCenter.objects.filter(department__organization=user.organization)
+    elif user_org:
+        dept_ccs = CostCenter.objects.filter(department__organization=user_org)
     else:
         dept_ccs = CostCenter.objects.filter(manager=user)
 
@@ -765,6 +849,16 @@ def superadmin_dashboard_view(request):
             Organization.objects.filter(is_active=True).count()
             if is_global_superadmin
             else (1 if (scoped_org and scoped_org.is_active) else 0)
+        ),
+        "inactive_organizations": (
+            Organization.objects.filter(is_active=False).count()
+            if is_global_superadmin
+            else (1 if (scoped_org and not scoped_org.is_active) else 0)
+        ),
+        "deactivated_organizations": (
+            Organization.objects.filter(is_active=False).count()
+            if is_global_superadmin
+            else (1 if (scoped_org and not scoped_org.is_active) else 0)
         ),
         "provisioned_admins": (
             Organization.objects.filter(admin_user__isnull=False).count()

@@ -3,6 +3,7 @@ from decimal import Decimal
 from unittest.mock import MagicMock
 
 import pytest
+from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.utils import timezone
 from rest_framework import status
@@ -141,17 +142,13 @@ def test_def_001_tc_wfl_008_overspend_blocked_when_allow_overspend_false(base_se
         estimated_total=Decimal("2000.00"),
     )
 
-    # Submit PR -> moves to STATUS_BUDGET_REVIEW because 2000 > 100
-    submit_purchase_requisition_service(requisition=pr, user=data["u_requester"])
-    pr.refresh_from_db()
-    assert pr.status == PurchaseRequisition.STATUS_BUDGET_REVIEW
-
-    # Approval by PROC_MGR must be blocked with ValidationError because allow_overspend is False
-    with pytest.raises(Exception) as exc_info:
-        approve_purchase_requisition_service(
-            requisition=pr, approver=data["u_proc_mgr"], comments="Attempting overrun approval"
-        )
+    # Submit PR -> blocked with ValidationError when allow_overspend is False
+    with pytest.raises(ValidationError) as exc_info:
+        submit_purchase_requisition_service(requisition=pr, user=data["u_requester"])
     assert "Budget overspend is not permitted" in str(exc_info.value)
+
+    pr.refresh_from_db()
+    assert pr.status == PurchaseRequisition.STATUS_DRAFT
 
     # Verify budget was NOT over-reserved
     budget.refresh_from_db()

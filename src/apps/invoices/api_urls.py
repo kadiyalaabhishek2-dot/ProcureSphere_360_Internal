@@ -52,13 +52,9 @@ class CanManageSupplierInvoice(BasePermission):
             action = getattr(view, "action", "")
             if "exception" in basename or "exception" in action:
                 return False
-            if action == "create_invoice":
-                return False
-            if action in ["pay_invoice", "pay", "run_match", "run_3_way_match"]:
+            if action in ["create_invoice", "pay_invoice", "pay", "run_match", "run_3_way_match"]:
                 return False
             if request.method in SAFE_METHODS:
-                return True
-            if request.method == "POST" and basename == "invoice" and action in ["create", None]:
                 return True
             return False
 
@@ -84,14 +80,24 @@ class CanManageSupplierInvoice(BasePermission):
         if getattr(view, "action", None) in ["run_match", "run_3_way_match"]:
             return role_code in [Role.SUPER_ADMIN, Role.FINANCE_AP, "SUPER_ADMIN", "FINANCE_AP"]
 
-        # Internal read-only roles on invoices per RBAC matrix (Proc Exec, Proc Mgr, Stores Receiver, Auditor)
+        # DEF-004 & DEF-005: Procurement Executives and Procurement Managers are permitted to create invoices
+        # (POST /api/v1/invoices/) and perform safe reads, while payment and exception resolution remain restricted.
         if role_code in [
             Role.PROC_EXEC,
             Role.PROC_MGR,
-            Role.STORES_RECEIVER,
-            Role.AUDITOR,
             "PROC_EXEC",
             "PROC_MGR",
+        ]:
+            if request.method in SAFE_METHODS:
+                return True
+            if request.method == "POST" and getattr(view, "action", None) in ["create", None]:
+                return True
+            return False
+
+        # Internal read-only roles on invoices per RBAC matrix (Stores Receiver, Auditor)
+        if role_code in [
+            Role.STORES_RECEIVER,
+            Role.AUDITOR,
             "STORES_RECEIVER",
             "AUDITOR",
         ]:
@@ -137,10 +143,18 @@ class CanManageSupplierInvoice(BasePermission):
         if role_code in [
             Role.PROC_EXEC,
             Role.PROC_MGR,
-            Role.STORES_RECEIVER,
-            Role.AUDITOR,
             "PROC_EXEC",
             "PROC_MGR",
+        ]:
+            if request.method in SAFE_METHODS:
+                return True
+            if request.method == "POST":
+                return True
+            return False
+
+        if role_code in [
+            Role.STORES_RECEIVER,
+            Role.AUDITOR,
             "STORES_RECEIVER",
             "AUDITOR",
         ]:
@@ -548,7 +562,81 @@ class MatchExceptionViewSet(viewsets.ModelViewSet):
             if getattr(user, "vendor_id", None):
                 return qs.filter(invoice__vendor_id=user.vendor_id)
             return qs.none()
-        return qs
+
+        from django.db.models import Q
+
+        from apps.organization.models import CostCenter, Department
+
+        raw_dept = (
+            self.request.query_params.get("dept")
+            or self.request.query_params.get("department")
+            or self.request.query_params.get("department_id")
+            or ""
+        ).strip()
+        if raw_dept:
+            dept_obj = None
+            import uuid
+
+            is_uuid = False
+            try:
+                uuid.UUID(str(raw_dept))
+                is_uuid = True
+            except (ValueError, AttributeError, TypeError):
+                is_uuid = False
+
+            if is_uuid:
+                dept_obj = Department.objects.filter(id=raw_dept).first()
+            if not dept_obj:
+                dept_obj = Department.objects.filter(
+                    Q(code__iexact=raw_dept) | Q(name__iexact=raw_dept)
+                ).first()
+
+            if dept_obj:
+                qs = qs.filter(
+                    Q(invoice__po__cost_center__department_id=dept_obj.id)
+                    | Q(invoice__po__requisition__department_id=dept_obj.id)
+                    | Q(invoice__po__requisition__cost_center__department_id=dept_obj.id)
+                ).distinct()
+            else:
+                qs = qs.none()
+
+        raw_cc = (
+            self.request.query_params.get("cost_center")
+            or self.request.query_params.get("cost_center_id")
+            or self.request.query_params.get("cc")
+            or ""
+        ).strip()
+        if raw_cc:
+            cc_obj = None
+            import uuid
+
+            is_uuid = False
+            try:
+                uuid.UUID(str(raw_cc))
+                is_uuid = True
+            except (ValueError, AttributeError, TypeError):
+                is_uuid = False
+
+            if is_uuid:
+                cc_obj = CostCenter.objects.filter(id=raw_cc).first()
+            if not cc_obj:
+                cc_obj = CostCenter.objects.filter(
+                    Q(code__iexact=raw_cc) | Q(name__iexact=raw_cc)
+                ).first()
+
+            if cc_obj:
+                qs = qs.filter(
+                    Q(invoice__po__cost_center_id=cc_obj.id)
+                    | Q(invoice__po__requisition__cost_center_id=cc_obj.id)
+                ).distinct()
+            else:
+                qs = qs.none()
+
+        status_param = self.request.query_params.get("status")
+        if status_param:
+            qs = qs.filter(status=status_param.upper())
+
+        return qs.order_by("-created_at")
 
     @action(detail=True, methods=["post"], url_path="resolve")
     def resolve_exception(self, request, pk=None):

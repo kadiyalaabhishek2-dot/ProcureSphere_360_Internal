@@ -233,7 +233,7 @@
         <div class="modal-content border-0 shadow-lg rounded-3">
             <div class="modal-header bg-slate-100 py-3 px-4 border-bottom">
                 <div class="d-flex align-items-center gap-3">
-                    <div class="avatar-circle-sm bg-hpe-navy text-amber fw-bold d-flex align-items-center justify-content-center rounded-circle flex-shrink-0" id="modalVendorInitial">
+                    <div class="avatar-circle-sm bg-primary text-white fw-bold d-flex align-items-center justify-content-center rounded-circle flex-shrink-0" style="background-color: #0b1a30 !important; color: #f59e0b !important;" id="modalVendorInitial">
                         V
                     </div>
                     <div>
@@ -603,10 +603,39 @@
         }
     }
 
-    function openCompareModal() {
+    async function openCompareModal() {
         const modal = new bootstrap.Modal(document.getElementById('supplierCompareModal'));
         const selectA = document.getElementById('compareVendorA');
         const selectB = document.getElementById('compareVendorB');
+
+        selectA.innerHTML = '<option value="">Loading suppliers...</option>';
+        selectB.innerHTML = '<option value="">Loading suppliers...</option>';
+        modal.show();
+
+        try {
+            const res = await fetchManagerAPI('/api/v1/vendors/?paginate=false&status=ACTIVE');
+            const vendorsList = Array.isArray(res) ? res : ((res && res.results) ? res.results : []);
+
+            if (vendorsList.length > 0) {
+                selectA.innerHTML = '';
+                selectB.innerHTML = '';
+                vendorsList.forEach((v, idx) => {
+                    const optA = document.createElement('option');
+                    optA.value = v.id;
+                    optA.textContent = `${v.legal_name} (${v.vendor_number})`;
+                    selectA.appendChild(optA);
+
+                    const optB = document.createElement('option');
+                    optB.value = v.id;
+                    optB.textContent = `${v.legal_name} (${v.vendor_number})`;
+                    if (idx === 1) optB.selected = true;
+                    selectB.appendChild(optB);
+                });
+                return;
+            }
+        } catch (e) {
+            console.warn('Could not load full vendor list for compare, falling back to cached scorecards', e);
+        }
 
         selectA.innerHTML = '';
         selectB.innerHTML = '';
@@ -632,8 +661,6 @@
             if (idx === 1) optB.selected = true;
             selectB.appendChild(optB);
         });
-
-        modal.show();
     }
 
     async function runSupplierComparison() {

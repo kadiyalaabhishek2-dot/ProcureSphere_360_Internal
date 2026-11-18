@@ -12,6 +12,10 @@
     <link rel="icon" type="image/webp" href="{% static 'icons/favicon.webp' %}">
     <link rel="apple-touch-icon" href="{% static 'icons/apple-touch-icon.webp' %}">
     <link rel="manifest" href="{% static 'icons/site.webmanifest' %}">
+    <!-- CDN Preconnects for Faster Handshakes -->
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+    <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
+    <link rel="preconnect" href="https://unpkg.com" crossorigin>
     <!-- Bootstrap 5 CSS -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <!-- Font Awesome -->
@@ -25,9 +29,36 @@
     <!-- Custom Design System Styles -->
     <link href="/static/css/style.css?v=ps_checkbox_focus_v1" rel="stylesheet">
     <!-- HTMX Library -->
-    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
-    <!-- Chart.js 4.4 JS -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.10/dist/htmx.min.js"></script>
+    <!-- Chart.js 4.4 JS (deferred to prevent render-blocking) -->
+    <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <script>
+        // Forward navigation & bfcache anti-tamper guard: if user backed out / exited, block dashboard restoration
+        (function() {
+            try {
+                var hasSubpageHistory = (
+                    sessionStorage.getItem('ps_visited_subpage') === 'true' ||
+                    sessionStorage.getItem('ps360_active_subpage') ||
+                    sessionStorage.getItem('ps_last_subpage_path') ||
+                    sessionStorage.getItem('ps_is_internal_navigation') === 'true'
+                );
+                if (hasSubpageHistory) {
+                    sessionStorage.removeItem('ps_is_internal_navigation');
+                    sessionStorage.removeItem('ps360_user_signed_out');
+                    localStorage.removeItem('ps360_user_signed_out');
+                    document.cookie = "ps360_user_signed_out=; path=/; max-age=0";
+                    document.cookie = "ps360_just_logged_out=; path=/; max-age=0";
+                    return;
+                }
+                if (sessionStorage.getItem('ps360_user_signed_out') === 'true' ||
+                    localStorage.getItem('ps360_user_signed_out') ||
+                    document.cookie.indexOf('ps360_user_signed_out=1') !== -1 ||
+                    document.cookie.indexOf('ps360_just_logged_out=1') !== -1) {
+                    window.location.replace('/login/?reason=signed_out');
+                }
+            } catch(e) {}
+        })();
+    </script>
     <style>
         /* ========================================================================= */
         /* GLOBAL LIGHT BLUE ENTERPRISE NAVBAR & SIDEBAR THEME                       */
@@ -1388,7 +1419,11 @@
                     <p class="text-secondary small mb-3">You are currently signed into ProcureSphere 360. Do you want to sign out of your session, or stay on your dashboard?</p>
                     <div class="d-flex flex-column gap-2">
                         <button type="button" class="btn btn-outline-secondary rounded-pill py-2 fw-semibold" id="stay-signed-in-btn" data-bs-dismiss="modal">Stay on Dashboard</button>
-                        <a href="/logout/" class="btn btn-danger rounded-pill py-2 fw-bold text-white text-decoration-none" id="signout-confirm-action-btn">Sign Out</a>
+                        <form method="POST" action="/logout/" id="signout-confirm-form" class="m-0 p-0">
+                            {% csrf_token %}
+                            <input type="hidden" name="reason" value="signed_out">
+                            <button type="submit" class="btn btn-danger rounded-pill py-2 w-100 fw-bold text-white border-0 shadow-sm" id="signout-confirm-action-btn" href="/logout/">Sign Out</button>
+                        </form>
                     </div>
                     <span id="signout-modal-timer" class="text-muted small mt-3 d-block" style="font-size: 11.5px;">
                         <i class="fa-regular fa-clock me-1"></i>Closing automatically in <strong id="signout-countdown-sec">6</strong>s
@@ -1402,7 +1437,19 @@
     <!-- Bootstrap JS Bundle -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     <!-- Custom Application JS -->
-    <script src="/static/js/app.js?v=ps_nav_v10"></script>
+    <script src="/static/js/app.js?v=ps_nav_v18"></script>
+    {% if request.user.is_authenticated %}
+    <script>
+      window.PS360_SESSION_CONFIG = {
+        idleTimeoutSeconds: {{ session_idle_timeout_seconds|default:300 }},
+        warningSeconds: 30,
+        keepAliveUrl: "/api/v1/auth/session-keepalive/",
+        logoutUrl: "/logout/?reason=inactivity",
+        loginUrl: "/login/?session_expired=1"
+      };
+    </script>
+    <script src="/static/js/session_timeout.js?v=1"></script>
+    {% endif %}
     <script>
         // Setup HTMX CSRF Token globally
         document.body.addEventListener('htmx:configRequest', (event) => {
@@ -1580,10 +1627,89 @@
         document.addEventListener('DOMContentLoaded', initSidebarToggle);
         document.body.addEventListener('htmx:afterSettle', initSidebarToggle);
 
-        // Instant visual feedback for clicked sidebar menu item
+        // Universal Sidebar Scroll State Preservation Controller
+        function getSidebarScrollContainer() {
+            const scrollable = document.querySelector(
+                '.sa-nav-scroll, aside nav.overflow-y-auto, [id$="Sidebar"] nav.overflow-y-auto, [id$="Nav"].overflow-y-auto, aside nav, [id$="Sidebar"] nav, aside .offcanvas-body'
+            );
+            if (scrollable) return scrollable;
+            const aside = document.querySelector('aside.sa-sidebar-desktop, aside.enterprise-sidebar, [id$="Sidebar"], aside');
+            if (aside) {
+                return aside.querySelector('.sa-nav-scroll, nav, .overflow-y-auto, .offcanvas-body') || aside;
+            }
+            return null;
+        }
+
+        function restoreSidebarScrollState() {
+            const el = getSidebarScrollContainer();
+            if (!el) return;
+
+            let targetScroll = null;
+            try {
+                const saved = sessionStorage.getItem('ps_sidebar_scroll_pos');
+                if (saved !== null && saved !== '') {
+                    const parsed = parseInt(saved, 10);
+                    if (!isNaN(parsed) && parsed >= 0) {
+                        targetScroll = parsed;
+                    }
+                }
+            } catch (e) {}
+
+            const apply = function() {
+                if (targetScroll !== null && targetScroll > 0) {
+                    el.scrollTop = targetScroll;
+                } else if (targetScroll === null) {
+                    try {
+                        const activeLink = el.querySelector(
+                            'a.active, a.active-nav-item, .sa-nav-link.active, .vendor-navlink.active-nav-item, .approver-navlink.active-nav-item'
+                        );
+                        if (activeLink) {
+                            const elRect = el.getBoundingClientRect();
+                            const linkRect = activeLink.getBoundingClientRect();
+                            if (linkRect.top < elRect.top || linkRect.bottom > elRect.bottom) {
+                                activeLink.scrollIntoView({ block: 'nearest', behavior: 'auto' });
+                            }
+                        }
+                    } catch (err) {}
+                }
+            };
+
+            apply();
+            requestAnimationFrame(apply);
+            setTimeout(apply, 30);
+            setTimeout(apply, 100);
+        }
+
+        function bindSidebarScrollTracking() {
+            const el = getSidebarScrollContainer();
+            if (!el || el._psScrollTracked) return;
+            el._psScrollTracked = true;
+            el.addEventListener('scroll', function() {
+                try {
+                    sessionStorage.setItem('ps_sidebar_scroll_pos', String(el.scrollTop));
+                } catch (e) {}
+            }, { passive: true });
+        }
+
+        // Restore immediately and bind tracking
+        restoreSidebarScrollState();
+        bindSidebarScrollTracking();
+        document.addEventListener('DOMContentLoaded', function() {
+            restoreSidebarScrollState();
+            bindSidebarScrollTracking();
+        });
+        window.addEventListener('pageshow', restoreSidebarScrollState);
+
+        // Instant visual feedback for clicked sidebar menu item & preserve scroll position
         document.addEventListener('click', function(e) {
             const link = e.target.closest('aside nav a, aside .sidebar-nav-container a, [id$="Sidebar"] nav a, [id$="Nav"] a, .sa-nav-link, .vendor-navlink, .unified-navlink, .finance-navlink, .proc-navlink, .req-navlink, .manager-nav-link');
             if (link && !link.getAttribute('href')?.startsWith('#') && link.getAttribute('href') !== '/logout/') {
+                const sc = getSidebarScrollContainer();
+                if (sc && sc.scrollTop >= 0) {
+                    try {
+                        sessionStorage.setItem('ps_sidebar_scroll_pos', String(sc.scrollTop));
+                    } catch (err) {}
+                }
                 const nav = link.closest('nav, aside, [id$="Sidebar"]');
                 if (nav) {
                     nav.querySelectorAll('a.active, a.active-nav-item').forEach(el => {

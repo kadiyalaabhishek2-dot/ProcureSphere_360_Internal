@@ -1,3 +1,4 @@
+import logging
 from decimal import Decimal
 
 from django.contrib import messages
@@ -5,6 +6,7 @@ from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ValidationError
 from django.db.models import Q
 from django.shortcuts import get_object_or_404, redirect, render
+from django.utils import timezone
 
 from apps.accounts.models import Role
 from apps.invoices.models import MatchException, MatchTolerancePolicy, SupplierInvoice
@@ -23,6 +25,7 @@ from apps.vendors.models import Vendor
 
 from .selectors import scope_invoices_queryset
 
+logger = logging.getLogger(__name__)
 
 INTERNAL_INVOICE_ROLES = [
     Role.FINANCE_AP,
@@ -113,24 +116,39 @@ def tolerance_settings_view(request):
         price_raw = request.POST.get("price_tolerance_pct", "").strip()
         qty_raw = request.POST.get("qty_tolerance_pct", "").strip()
 
-        # Reject decimals or non-digits (whole integers only)
-        if not price_raw.isdigit() or not qty_raw.isdigit():
-            messages.error(
+        price_error = None
+        qty_error = None
+
+        if not price_raw:
+            price_error = "Price Variance Tolerance (%) is required."
+        elif not price_raw.isdigit():
+            price_error = "Price Variance Tolerance (%) must be a whole number between 0 and 100 without decimals."
+        elif not (0 <= int(price_raw) <= 100):
+            price_error = "Price Variance Tolerance (%) must be between 0 and 100."
+
+        if not qty_raw:
+            qty_error = "Quantity Variance Tolerance (%) is required."
+        elif not qty_raw.isdigit():
+            qty_error = "Quantity Variance Tolerance (%) must be a whole number between 0 and 100 without decimals."
+        elif not (0 <= int(qty_raw) <= 100):
+            qty_error = "Quantity Variance Tolerance (%) must be between 0 and 100."
+
+        if price_error or qty_error:
+            return render(
                 request,
-                "Price and Quantity Variance Tolerances must be whole numbers without decimal values.",
+                "pages/invoices/settings.html",
+                {
+                    "policy": policy,
+                    "price_error": price_error,
+                    "qty_error": qty_error,
+                    "submitted_price": price_raw,
+                    "submitted_qty": qty_raw,
+                },
             )
-            return render(request, "pages/invoices/settings.html", {"policy": policy})
 
         try:
             price_int = int(price_raw)
             qty_int = int(qty_raw)
-
-            if not (0 <= price_int <= 100 and 0 <= qty_int <= 100):
-                messages.error(
-                    request,
-                    "Tolerances must be whole percentages between 0% and 100%.",
-                )
-                return render(request, "pages/invoices/settings.html", {"policy": policy})
 
             policy.price_tolerance_pct = Decimal(price_int) / Decimal("100")
             policy.qty_tolerance_pct = Decimal(qty_int) / Decimal("100")
@@ -477,6 +495,11 @@ def create_invoice_view(request):
             messages.error(request, "Invoice Date is required.")
             return render(request, "pages/invoices/create.html", {"vendors": vendors, "pos": pos, "form_data": form_data})
 
+        today_iso = timezone.now().date().isoformat()
+        if invoice_date > today_iso:
+            messages.error(request, "Invoice Date cannot be in the future. Please select today or an earlier date.")
+            return render(request, "pages/invoices/create.html", {"vendors": vendors, "pos": pos, "form_data": form_data})
+
         if not due_date:
             messages.error(request, "Payment Due Date is required.")
             return render(request, "pages/invoices/create.html", {"vendors": vendors, "pos": pos, "form_data": form_data})
@@ -513,6 +536,15 @@ def create_invoice_view(request):
         try:
             vendor = get_object_or_404(Vendor, id=vendor_id)
             po = get_object_or_404(PurchaseOrder, id=po_id)
+
+            if po.vendor_id != vendor.id:
+                messages.error(request, f"Purchase Order {po.po_number} does not belong to vendor '{vendor.legal_name}'.")
+                return render(request, "pages/invoices/create.html", {"vendors": vendors, "pos": pos, "form_data": form_data})
+
+            if not po.lines.exists():
+                messages.error(request, f"Purchase Order {po.po_number} has no line items and cannot be invoiced.")
+                return render(request, "pages/invoices/create.html", {"vendors": vendors, "pos": pos, "form_data": form_data})
+
             po_line = po.lines.first()
 
             line_items = [
@@ -540,16 +572,27 @@ def create_invoice_view(request):
             return redirect("invoices_list")
 
         except ValidationError as ve:
-            if hasattr(ve, "messages") and ve.messages:
-                err_msg = ve.messages[0]
+            if hasattr(ve, "message_dict") and ve.message_dict:
+                messages_list = []
+                for field, field_errs in ve.message_dict.items():
+                    field_label = field.replace("_", " ").title() if field != "__all__" else "Validation Error"
+                    for err in field_errs:
+                        messages_list.append(f"{field_label}: {err}")
+                err_msg = " ".join(messages_list)
+            elif hasattr(ve, "messages") and ve.messages:
+                err_msg = " ".join(str(m) for m in ve.messages)
             elif hasattr(ve, "message"):
                 err_msg = ve.message
             else:
                 err_msg = str(ve).strip("[]'\"")
             messages.error(request, err_msg)
             return render(request, "pages/invoices/create.html", {"vendors": vendors, "pos": pos, "form_data": form_data})
-        except Exception:
-            messages.error(request, "An unexpected error occurred while creating the invoice. Please check your inputs and try again.")
+        except Exception as e:
+            logger.exception("Unexpected error while creating supplier invoice")
+            err_msg = str(e).strip("[]'\"")
+            if not err_msg:
+                err_msg = "Please check your inputs and try again."
+            messages.error(request, f"Failed to create invoice: {err_msg}")
             return render(request, "pages/invoices/create.html", {"vendors": vendors, "pos": pos, "form_data": form_data})
 
     return render(request, "pages/invoices/create.html", {"vendors": vendors, "pos": pos, "form_data": form_data})

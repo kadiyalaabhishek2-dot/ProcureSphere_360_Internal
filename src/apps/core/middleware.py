@@ -145,6 +145,12 @@ class SecurityHeadersMiddleware:
             if "sessionid" in response.cookies:
                 response.cookies["sessionid"]["secure"] = True
 
+        # Prevent browser back/forward cache (bfcache) from restoring sensitive authenticated dashboards
+        if hasattr(request, "user") and request.user.is_authenticated and not request.path.startswith("/static/"):
+            response["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
+            response["Pragma"] = "no-cache"
+            response["Expires"] = "0"
+
         # Prevent DEBUG mode information leakage on 404 responses (DEF-006)
         if response.status_code == 404 and not request.path.startswith("/api/"):
             content = getattr(response, "content", b"")
@@ -176,7 +182,6 @@ class VendorPortalIsolationMiddleware:
         "/audit",
         "/admin",
         "/api/v1/requisitions",
-        "/api/v1/contracts",
         "/api/v1/budgets",
         "/api/v1/reports",
         "/api/v1/audit",
@@ -198,6 +203,15 @@ class VendorPortalIsolationMiddleware:
 
             if is_vendor:
                 path = request.path.rstrip("/")
+                # DEF-003: Allow vendor read-only access to /api/v1/contracts so DRF can serve
+                # vendor-isolated contracts (CanViewContract and get_contracts_qs),
+                # while strictly blocking vendor mutations (POST, PUT, PATCH, DELETE) and buyer endpoints.
+                if (
+                    path == "/api/v1/contracts"
+                    or path.startswith("/api/v1/contracts/")
+                ) and request.method in ("GET", "HEAD", "OPTIONS"):
+                    return self.get_response(request)
+
                 for prefix in self.BLOCKED_INTERNAL_PREFIXES:
                     if path == prefix or path.startswith(prefix + "/"):
                         if request.path.startswith("/api/"):

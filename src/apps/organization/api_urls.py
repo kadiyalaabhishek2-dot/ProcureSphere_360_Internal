@@ -75,15 +75,11 @@ class IsAdminOrReadOnly(BasePermission):
             or role_code in [Role.SUPER_ADMIN, "SUPER_ADMIN"]
         ):
             return True
-        if role_code in [Role.REQUESTER, "REQUESTER"]:
-            if isinstance(view, CostCenterViewSet) and request.method in SAFE_METHODS:
-                return True
-            return False
         return request.method in SAFE_METHODS
 
 
 class OrganizationViewSet(viewsets.ModelViewSet):
-    queryset = Organization.objects.all().order_by("name")
+    queryset = Organization.objects.all().order_by("name", "id")
     serializer_class = OrganizationSerializer
     permission_classes = [IsAdminOrReadOnly]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
@@ -141,7 +137,7 @@ class OrganizationViewSet(viewsets.ModelViewSet):
 
 
 class DepartmentViewSet(viewsets.ModelViewSet):
-    queryset = Department.objects.all().order_by("name")
+    queryset = Department.objects.all().order_by("name", "id")
     serializer_class = DepartmentSerializer
     permission_classes = [IsAdminOrReadOnly]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
@@ -167,7 +163,7 @@ class DepartmentViewSet(viewsets.ModelViewSet):
 
 
 class CostCenterViewSet(viewsets.ModelViewSet):
-    queryset = CostCenter.objects.all().order_by("name")
+    queryset = CostCenter.objects.all().order_by("name", "id")
     serializer_class = CostCenterSerializer
     permission_classes = [IsAdminOrReadOnly]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]

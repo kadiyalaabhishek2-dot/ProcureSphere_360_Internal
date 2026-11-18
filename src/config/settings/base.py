@@ -171,6 +171,8 @@ MIDDLEWARE = [
 
     "whitenoise.middleware.WhiteNoiseMiddleware",
 
+    "django.middleware.gzip.GZipMiddleware",
+
     "corsheaders.middleware.CorsMiddleware",
 
     "django.contrib.sessions.middleware.SessionMiddleware",
@@ -182,6 +184,8 @@ MIDDLEWARE = [
     "django.middleware.csrf.CsrfViewMiddleware",
 
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+
+    "apps.accounts.middleware.SessionIdleTimeoutMiddleware",
 
     "apps.core.middleware.VendorPortalIsolationMiddleware",
 
@@ -240,6 +244,7 @@ TEMPLATES = [
 
                 "apps.core.context_processors.layout_context",
                 "apps.core.context_processors.seo_context",
+                "apps.core.context_processors.session_security_context",
 
             ],
 
@@ -399,7 +404,7 @@ REST_FRAMEWORK = {
 
     ),
 
-    "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
+    "DEFAULT_PAGINATION_CLASS": "apps.core.pagination.StandardResultsSetPagination",
 
     "PAGE_SIZE": 25,
 
@@ -412,6 +417,12 @@ REST_FRAMEWORK = {
 
 
 # Session & CSRF Security Baseline
+
+SESSION_IDLE_TIMEOUT_SECONDS = env.int("SESSION_IDLE_TIMEOUT_SECONDS", default=300)
+
+SESSION_COOKIE_AGE = SESSION_IDLE_TIMEOUT_SECONDS
+
+SESSION_SAVE_EVERY_REQUEST = True
 
 SESSION_COOKIE_HTTPONLY = True
 

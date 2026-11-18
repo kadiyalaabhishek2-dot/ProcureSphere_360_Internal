@@ -269,8 +269,34 @@
                         </tbody>
                     </table>
                 </div>
+                {% if open_match_exceptions.has_other_pages %}
+                <div class="d-flex justify-content-between align-items-center mt-3 pt-3 border-top flex-wrap gap-2">
+                    <span class="text-muted small">
+                        Showing {{ open_match_exceptions.start_index }}–{{ open_match_exceptions.end_index }} of {{ metrics.pending_match_exceptions }} exceptions
+                    </span>
+                    <nav aria-label="Exceptions pagination">
+                        <ul class="pagination pagination-sm mb-0">
+                            {% if open_match_exceptions.has_previous %}
+                            <li class="page-item">
+                                <a class="page-link rounded-pill px-3 me-1" href="?dept={{ selected_dept_id }}&cost_center={{ selected_cc_id }}&page={{ open_match_exceptions.previous_page_number }}">Previous</a>
+                            </li>
+                            {% endif %}
+                            <li class="page-item active">
+                                <span class="page-link rounded-pill px-3">{{ open_match_exceptions.number }} / {{ open_match_exceptions.paginator.num_pages }}</span>
+                            </li>
+                            {% if open_match_exceptions.has_next %}
+                            <li class="page-item">
+                                <a class="page-link rounded-pill px-3 ms-1" href="?dept={{ selected_dept_id }}&cost_center={{ selected_cc_id }}&page={{ open_match_exceptions.next_page_number }}">Next</a>
+                            </li>
+                            {% endif %}
+                        </ul>
+                    </nav>
+                </div>
+                {% endif %}
             </div>
         </div>
+    </div>
+
     <!-- PRs Awaiting Finance Approval -->
     <div class="col-12 mt-4" id="pr-approvals-section">
         <div class="card {% if metrics.pending_pr_approvals > 0 %}border border-2 border-primary{% else %}border-0{% endif %} shadow-sm rounded-4">

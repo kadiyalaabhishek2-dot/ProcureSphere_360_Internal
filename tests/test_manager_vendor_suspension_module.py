@@ -168,8 +168,8 @@ def test_manager_dashboard_view_no_modals_and_has_suspension_desk_link(client, s
     # Assert direct link to unified suspension module exists
     assert "/manager/vendor-risk/?tab=suspension" in html
 
-    # Assert high-risk border styling pattern exists in script
-    assert "border-start border-4 border-danger" in html
+    # Assert supplier governance watchlist table container is rendered
+    assert "dashWatchlistBody" in html
 
 
 def test_governance_action_suspend_and_reinstate_api(client, suspension_fixtures):

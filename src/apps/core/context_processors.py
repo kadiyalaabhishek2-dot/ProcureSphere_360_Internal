@@ -24,6 +24,12 @@ def layout_context(request):
         role_code = getattr(user, "role_code", None) or (
             user.role.code if hasattr(user, "role") and user.role else None
         )
+        from_param = request.GET.get("from", "").strip().lower()
+        referer = request.headers.get("referer", "").lower()
+        is_from_manager = from_param == "manager" or "/manager/" in referer
+        if is_from_manager and (user.is_superuser or role_code in [Role.SUPER_ADMIN, "SUPER_ADMIN", "ADMIN", Role.PROC_MGR, "PROC_MGR"]):
+            return {"base_layout": "manager/base_manager.html"}
+
         if user.is_superuser or role_code in [Role.SUPER_ADMIN, "SUPER_ADMIN", "ADMIN"]:
             return {"base_layout": "layouts/superadmin_base.html"}
         elif role_code in [Role.PROC_MGR, "PROC_MGR"]:
@@ -46,3 +52,11 @@ def layout_context(request):
         elif role_code in [Role.REQUESTER, "REQUESTER"]:
             return {"base_layout": "layouts/requester_base.html"}
     return {}
+
+
+def session_security_context(request):
+    """Exposes the configured global inactivity timeout (seconds) to templates."""
+    timeout_seconds = int(getattr(django_settings, "SESSION_IDLE_TIMEOUT_SECONDS", 300))
+    return {
+        "session_idle_timeout_seconds": timeout_seconds,
+    }

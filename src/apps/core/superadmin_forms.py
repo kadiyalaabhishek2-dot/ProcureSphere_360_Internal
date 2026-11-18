@@ -11,6 +11,9 @@ from apps.approvals.models import ApprovalPolicy
 from apps.budgets.models import Budget
 from apps.organization.models import CostCenter, Department, FiscalPeriod, Location, Organization
 from apps.organization.validators import (
+    validate_city_has_letters,
+    validate_code_has_letters,
+    validate_name_has_letters,
     validate_org_address,
     validate_org_admin_email,
     validate_org_code,
@@ -55,7 +58,26 @@ def _get_form_scoped_org(request):
 
 
 
-class UserAdminForm(forms.ModelForm):
+class BootstrapValidationMixin:
+    """
+    Ensures any field with validation errors receives the .is-invalid CSS class
+    and ARIA accessibility attributes (aria-invalid, aria-describedby) so
+    Bootstrap and screen readers immediately highlight the error.
+    """
+    def clean(self):
+        cleaned_data = super().clean()
+        for field_name in list(self.errors.keys()):
+            if field_name and field_name in self.fields:
+                widget = self.fields[field_name].widget
+                current_classes = widget.attrs.get("class", "form-control")
+                if "is-invalid" not in current_classes:
+                    widget.attrs["class"] = f"{current_classes} is-invalid"
+                widget.attrs["aria-invalid"] = "true"
+                widget.attrs["aria-describedby"] = f"id_{field_name}-error"
+        return cleaned_data
+
+
+class UserAdminForm(BootstrapValidationMixin, forms.ModelForm):
 
 
 
@@ -224,8 +246,9 @@ class UserAdminForm(forms.ModelForm):
 
 
         self.fields["email"].required = True
-
-
+        self.fields["email"].error_messages["required"] = "Email Address is required."
+        self.fields["role"].required = True
+        self.fields["role"].error_messages["required"] = "Role is required."
 
         scoped_org = _get_form_scoped_org(request)
         if not scoped_org and self.instance and getattr(self.instance, "organization_id", None):
@@ -272,84 +295,42 @@ class UserAdminForm(forms.ModelForm):
 
 
         if scoped_org:
-
-
-
             dept_qs = dept_qs.filter(organization=scoped_org)
-
-
-
             cc_qs = cc_qs.filter(department__organization=scoped_org)
-
-
-
-
-
-
 
         self.fields["department"].queryset = dept_qs
         if not self.instance.pk or getattr(self.instance, "_state", None) and self.instance._state.adding:
             self.fields["is_active"].initial = True
             self.initial["is_active"] = True
 
-
-
         self.fields["department"].empty_label = "-- Select Department (Optional) --"
-
-
-
         self.fields["department"].required = False
 
-
-
-
-
-
+        # Exclude cost centers already assigned to active Requesters so they do not show in the dropdown
+        assigned_req_cc_ids = User.objects.filter(
+            role__code=Role.REQUESTER,
+            is_active=True,
+            cost_center__isnull=False,
+        )
+        if self.instance and self.instance.pk and not getattr(self.instance, "_state", None).adding:
+            assigned_req_cc_ids = assigned_req_cc_ids.exclude(pk=self.instance.pk)
+        assigned_cc_id_set = set(assigned_req_cc_ids.values_list("cost_center_id", flat=True))
+        if assigned_cc_id_set:
+            cc_qs = cc_qs.exclude(id__in=assigned_cc_id_set)
 
         self.fields["cost_center"].queryset = cc_qs
-
-
-
         self.fields["cost_center"].empty_label = "-- Select Cost Center --"
-
-
-
         self.fields["cost_center"].required = False
 
-
-
-
-
-
-
         # In unbound GET edit mode, filter cost centers to the user's department for clean UI rendering.
-
-
-
         # On bound POST submission, keep all cost centers in queryset so clean() can catch cross-department
-
-
-
         # and duplicate assignments with descriptive domain error messages.
-
-
-
         if not self.is_bound and self.instance and self.instance.pk and self.instance.department_id:
-
-
-
             edit_cc_qs = CostCenter.objects.filter(department_id=self.instance.department_id)
-
-
-
             if scoped_org:
-
-
-
                 edit_cc_qs = edit_cc_qs.filter(department__organization=scoped_org)
-
-
-
+            if assigned_cc_id_set:
+                edit_cc_qs = edit_cc_qs.exclude(id__in=assigned_cc_id_set)
             self.fields["cost_center"].queryset = edit_cc_qs.order_by("name")
 
 
@@ -401,19 +382,24 @@ class UserAdminForm(forms.ModelForm):
 
 
 
+    def clean_phone_number(self):
+        phone = (self.cleaned_data.get("phone_number") or "").strip()
+        if not phone:
+            return phone
+        import re
+        if not re.match(r"^\+?[0-9\s\-()]{7,20}$", phone):
+            raise forms.ValidationError("Enter a valid phone number.")
+        return phone
+
     def clean_email(self):
-
-
-
         email = self.cleaned_data.get("email", "").strip().lower()
-
-
-
         if not email:
-
-
-
-            raise forms.ValidationError("Email address is required.")
+            raise forms.ValidationError("Email Address is required.")
+        from django.core.validators import validate_email
+        try:
+            validate_email(email)
+        except forms.ValidationError:
+            raise forms.ValidationError("Enter a valid email address.")
 
 
 
@@ -823,7 +809,7 @@ class UserAdminForm(forms.ModelForm):
 
 
 
-class OrganizationAdminForm(forms.ModelForm):
+class OrganizationAdminForm(BootstrapValidationMixin, forms.ModelForm):
     # 1. Organization Administrator
     admin_email = forms.EmailField(
 
@@ -1377,7 +1363,7 @@ class OrganizationAdminForm(forms.ModelForm):
 
 
 
-class DepartmentAdminForm(forms.ModelForm):
+class DepartmentAdminForm(BootstrapValidationMixin, forms.ModelForm):
 
 
 
@@ -1441,62 +1427,29 @@ class DepartmentAdminForm(forms.ModelForm):
 
 
 
+        self.fields["name"].required = True
+        self.fields["code"].required = True
+        self.fields["organization"].required = True
+        self.fields["name"].error_messages["required"] = "Department Name is required."
+        self.fields["code"].error_messages["required"] = "Department Code is required."
+        self.fields["organization"].error_messages["required"] = "Parent Organization is required."
+
         scoped_org = _get_form_scoped_org(request)
-
-
-
         if scoped_org:
-
-
-
             self.fields["organization"].queryset = Organization.objects.filter(id=scoped_org.id)
-
-
-
             self.fields["organization"].initial = scoped_org
-
-
-
             self.fields["organization"].empty_label = None
-
-
-
         else:
-
-
-
             self.fields["organization"].queryset = Organization.objects.filter(is_active=True).order_by("name")
-
-
-
             self.fields["organization"].empty_label = "-- Select Organization --"
 
-
-
-
-
-
-
     def clean_organization(self):
-
-
-
         org = self.cleaned_data.get("organization")
-
-
-
+        if not org:
+            raise forms.ValidationError("Parent Organization is required.")
         scoped_org = _get_form_scoped_org(self.request)
-
-
-
         if scoped_org and org and org.id != scoped_org.id:
-
-
-
             raise forms.ValidationError("You cannot assign a department to another organization.")
-
-
-
         return org
 
 
@@ -1505,42 +1458,19 @@ class DepartmentAdminForm(forms.ModelForm):
 
 
 
+    def clean_name(self):
+        name = self.cleaned_data.get("name")
+        return validate_name_has_letters(name, field_label="Department Name", min_len=2, max_len=150)
+
     def clean_code(self):
-
-
-
-        code = self.cleaned_data.get("code", "").strip().upper()
-
-
-
-        if not code:
-
-
-
-            raise forms.ValidationError("Department code is required.")
-
-
+        code = self.cleaned_data.get("code")
+        code = validate_code_has_letters(code, field_label="Department Code", min_len=2, max_len=50)
 
         qs = Department.objects.filter(code=code)
-
-
-
         if self.instance and self.instance.pk:
-
-
-
             qs = qs.exclude(pk=self.instance.pk)
-
-
-
         if qs.exists():
-
-
-
             raise forms.ValidationError(f"Department code '{code}' already exists. Code must be unique.")
-
-
-
         return code
 
 
@@ -1553,7 +1483,7 @@ class DepartmentAdminForm(forms.ModelForm):
 
 
 
-class CostCenterAdminForm(forms.ModelForm):
+class CostCenterAdminForm(BootstrapValidationMixin, forms.ModelForm):
 
 
 
@@ -1658,12 +1588,23 @@ class CostCenterAdminForm(forms.ModelForm):
 
 
         if scoped_org:
-
-
-
             dept_qs = dept_qs.filter(organization=scoped_org)
 
+        self.fields["code"].required = True
+        self.fields["name"].required = True
+        self.fields["department"].required = True
+        self.fields["code"].error_messages["required"] = "Cost Center Code is required."
+        self.fields["name"].error_messages["required"] = "Cost Center Name is required."
+        self.fields["department"].error_messages["required"] = "Department is required."
 
+        # Exclude departments already assigned to existing Cost Centers
+        assigned_depts = CostCenter.objects.filter(department__isnull=False)
+        if self.instance and self.instance.pk and not getattr(self.instance, "_state", None).adding:
+            assigned_depts = assigned_depts.exclude(pk=self.instance.pk)
+        assigned_dept_ids = set(assigned_depts.values_list("department_id", flat=True))
+
+        if not self.is_bound and assigned_dept_ids:
+            dept_qs = dept_qs.exclude(id__in=assigned_dept_ids)
 
         self.fields["department"].queryset = dept_qs
 
@@ -1685,25 +1626,29 @@ class CostCenterAdminForm(forms.ModelForm):
 
 
 
+    def clean_name(self):
+        name = self.cleaned_data.get("name")
+        return validate_name_has_letters(name, field_label="Cost Center Name", min_len=2, max_len=150)
+
+    def clean_code(self):
+        code = self.cleaned_data.get("code")
+        code = validate_code_has_letters(code, field_label="Cost Center Code", min_len=2, max_len=50)
+
+        qs = CostCenter.objects.filter(code=code)
+        if self.instance and self.instance.pk:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise forms.ValidationError(f"Cost Center code '{code}' already exists. Code must be unique.")
+        return code
+
     def clean_department(self):
-
-
-
         dept = self.cleaned_data.get("department")
-
-
+        if not dept:
+            raise forms.ValidationError("Department is required.")
 
         scoped_org = _get_form_scoped_org(self.request)
-
-
-
         if scoped_org and dept and dept.organization_id != scoped_org.id:
-
-
-
             raise forms.ValidationError("You cannot assign a cost center to another organization's department.")
-
-
 
         return dept
 
@@ -1714,18 +1659,14 @@ class CostCenterAdminForm(forms.ModelForm):
 
 
     def clean_manager(self):
-
-
-
         raw = (self.cleaned_data.get("manager") or "").strip()
-
-
-
         if not raw:
-
-
-
             return None
+        from django.core.validators import validate_email
+        try:
+            validate_email(raw)
+        except forms.ValidationError:
+            raise forms.ValidationError("Enter a valid email address.")
 
 
 
@@ -1873,43 +1814,6 @@ class CostCenterAdminForm(forms.ModelForm):
 
 
 
-    def clean_code(self):
-
-
-
-        code = self.cleaned_data.get("code", "").strip().upper()
-
-
-
-        if not code:
-
-
-
-            raise forms.ValidationError("Cost center code is required.")
-
-
-
-        qs = CostCenter.objects.filter(code=code)
-
-
-
-        if self.instance and self.instance.pk:
-
-
-
-            qs = qs.exclude(pk=self.instance.pk)
-
-
-
-        if qs.exists():
-
-
-
-            raise forms.ValidationError(f"Cost center code '{code}' already exists. Code must be unique.")
-
-
-
-        return code
 
 
 
@@ -1921,7 +1825,8 @@ class CostCenterAdminForm(forms.ModelForm):
 
 
 
-class BudgetAdminForm(forms.ModelForm):
+
+class BudgetAdminForm(BootstrapValidationMixin, forms.ModelForm):
 
 
 
@@ -2033,65 +1938,23 @@ class BudgetAdminForm(forms.ModelForm):
 
 
 
+        self.fields["cost_center"].required = True
+        self.fields["fiscal_period"].required = True
+        self.fields["allocated_amount"].required = True
+        self.fields["cost_center"].error_messages["required"] = "Cost Center is required."
+        self.fields["fiscal_period"].error_messages["required"] = "Fiscal Period is required."
+        self.fields["allocated_amount"].error_messages["required"] = "Allocated Amount is required."
+
         self.fields["cost_center"].queryset = cc_qs
         self.fields["cost_center"].empty_label = "-- Select Cost Center --"
 
         self.fields["fiscal_period"].queryset = fp_qs
-
-
-
         self.fields["fiscal_period"].label_from_instance = (
-
-
-
             lambda period: f"{period.name} ({period.start_date} to {period.end_date})"
-
-
-
         )
+        self.fields["fiscal_period"].empty_label = "-- Select Fiscal Period --"
 
-
-
-        if fp_qs.exists():
-
-
-
-            # Drop the blank "---------" option so the period name and dates are visible.
-
-
-
-            self.fields["fiscal_period"].empty_label = None
-
-
-
-            if not getattr(self.instance, "pk", None) and not self.is_bound:
-
-
-
-                today = timezone.localdate()
-
-
-
-                active = fp_qs.filter(
-
-
-
-                    is_closed=False, start_date__lte=today, end_date__gte=today
-
-
-
-                ).first()
-
-
-
-                self.initial["fiscal_period"] = (active or fp_qs.first()).pk
-
-
-
-        else:
-
-
-
+        if not fp_qs.exists():
             self.fields["fiscal_period"].empty_label = "No fiscal period yet — add one first"
 
 
@@ -2113,67 +1976,30 @@ class BudgetAdminForm(forms.ModelForm):
 
 
     def clean_allocated_amount(self):
-
-
-
         amount = self.cleaned_data.get("allocated_amount")
-
-
-
-        if amount is None:
-
-
-
-            return amount
-
-
-
+        if amount is None or str(amount).strip() == "":
+            raise forms.ValidationError("Allocated Amount is required.")
         try:
-
-
-
-            amount = Decimal(amount)
-
-
-
+            amount = Decimal(str(amount))
         except (InvalidOperation, TypeError, ValueError):
-
-
-
             raise forms.ValidationError("Enter a valid budget amount.")
-
-
-
-        if amount < 0:
-
-
-
-            raise forms.ValidationError("Allocated amount cannot be negative.")
-
-
-
-        # DecimalField max_digits=14, decimal_places=2 → 12 integer digits.
-
-
-
+        if amount <= 0:
+            raise forms.ValidationError("Allocated Amount must be greater than zero.")
         if amount.quantize(Decimal("0.01")) >= Decimal("1000000000000"):
-
-
-
-            raise forms.ValidationError(
-
-
-
-                "Allocated amount is too large. Use at most 12 digits before the decimal."
-
-
-
-            )
-
-
-
+            raise forms.ValidationError("Allocated amount is too large. Use at most 12 digits before the decimal.")
         return amount.quantize(Decimal("0.01"))
 
+    def clean(self):
+        cleaned_data = super().clean()
+        cc = cleaned_data.get("cost_center")
+        fp = cleaned_data.get("fiscal_period")
+        if cc and fp:
+            qs = Budget.objects.filter(cost_center=cc, fiscal_period=fp)
+            if self.instance and self.instance.pk:
+                qs = qs.exclude(pk=self.instance.pk)
+            if qs.exists():
+                self.add_error("cost_center", "A budget allocation for this Cost Center and Fiscal Period already exists.")
+        return cleaned_data
 
 
 
@@ -2184,7 +2010,8 @@ class BudgetAdminForm(forms.ModelForm):
 
 
 
-class FiscalPeriodAdminForm(forms.ModelForm):
+
+class FiscalPeriodAdminForm(BootstrapValidationMixin, forms.ModelForm):
 
 
 
@@ -2253,114 +2080,77 @@ class FiscalPeriodAdminForm(forms.ModelForm):
 
 
             "year": forms.NumberInput(
-
-
-
-                attrs={"class": "form-control", "placeholder": "2026", "min": "2000"}
-
-
-
+                attrs={"class": "form-control", "placeholder": "2026", "min": "2000", "max": "2100"}
             ),
-
-
-
-            "period_number": forms.NumberInput(attrs={"class": "form-control", "min": "1"}),
-
-
-
+            "period_number": forms.NumberInput(attrs={"class": "form-control", "min": "1", "max": "52"}),
             "start_date": forms.DateInput(
-
-
-
                 attrs={"class": "form-control", "type": "date"}, format="%Y-%m-%d"
-
-
-
             ),
-
-
-
             "end_date": forms.DateInput(
-
-
-
                 attrs={"class": "form-control", "type": "date"}, format="%Y-%m-%d"
-
-
-
             ),
-
-
-
             "is_closed": forms.CheckboxInput(attrs={"class": "form-check-input"}),
-
-
-
         }
 
-
-
-
-
-
-
     def __init__(self, *args, request=None, **kwargs):
-
-
-
         self.request = request
-
-
-
         super().__init__(*args, **kwargs)
-
-
+        self.fields["organization"].required = True
+        self.fields["name"].required = True
+        self.fields["year"].required = True
+        self.fields["period_number"].required = True
+        self.fields["start_date"].required = True
+        self.fields["end_date"].required = True
+        self.fields["organization"].error_messages["required"] = "Parent Organization is required."
+        self.fields["name"].error_messages["required"] = "Fiscal Period Name is required."
+        self.fields["year"].error_messages["required"] = "Year is required."
+        self.fields["period_number"].error_messages["required"] = "Period Number is required."
+        self.fields["start_date"].error_messages["required"] = "Start Date is required."
+        self.fields["end_date"].error_messages["required"] = "End Date is required."
 
         self.fields["start_date"].input_formats = ["%Y-%m-%d"]
-
-
-
         self.fields["end_date"].input_formats = ["%Y-%m-%d"]
-
-
-
         current_year = timezone.localdate().year
+        self.fields["year"].widget.attrs["min"] = "2000"
+        self.fields["year"].widget.attrs["max"] = "2100"
+        self.fields["period_number"].widget.attrs["min"] = "1"
+        self.fields["period_number"].widget.attrs["max"] = "52"
 
-
-
-        self.fields["year"].widget.attrs["min"] = str(current_year)
-
-
+        if not self.instance.pk or (getattr(self.instance, "_state", None) and self.instance._state.adding):
+            today = timezone.localdate()
+            self.fields["start_date"].initial = today
+            self.initial.setdefault("start_date", today)
+            self.fields["year"].initial = today.year
+            self.initial.setdefault("year", today.year)
 
         scoped_org = _get_form_scoped_org(request)
-
-
-
         if scoped_org:
-
-
-
             self.fields["organization"].queryset = Organization.objects.filter(id=scoped_org.id)
-
-
-
             self.fields["organization"].initial = scoped_org
-
-
-
             self.fields["organization"].empty_label = None
-
-
-
         else:
-
-
-
             self.fields["organization"].queryset = Organization.objects.filter(is_active=True).order_by("name")
-
-
-
             self.fields["organization"].empty_label = "-- Select Organization --"
+
+    def clean_name(self):
+        name = (self.cleaned_data.get("name") or "").strip()
+        return validate_name_has_letters(name, field_label="Fiscal Period Name", min_len=2, max_len=100)
+
+    def clean_year(self):
+        year = self.cleaned_data.get("year")
+        if year is None:
+            raise forms.ValidationError("Year is required.")
+        if year < 2000 or year > 2100:
+            raise forms.ValidationError("Please enter a valid 4-digit year between 2000 and 2100.")
+        return year
+
+    def clean_period_number(self):
+        pn = self.cleaned_data.get("period_number")
+        if pn is None:
+            raise forms.ValidationError("Period number is required.")
+        if pn < 1 or pn > 52:
+            raise forms.ValidationError("Period number must be between 1 and 52.")
+        return pn
 
 
 
@@ -2389,6 +2179,15 @@ class FiscalPeriodAdminForm(forms.ModelForm):
 
 
             self.add_error("end_date", "End date must be on or after the start date.")
+        org = cleaned.get("organization") or _get_form_scoped_org(self.request)
+        year = cleaned.get("year")
+        pn = cleaned.get("period_number")
+        if org and year is not None and pn is not None:
+            qs = FiscalPeriod.objects.filter(organization=org, year=year, period_number=pn)
+            if self.instance and self.instance.pk:
+                qs = qs.exclude(pk=self.instance.pk)
+            if qs.exists():
+                self.add_error("period_number", f"Fiscal period {pn} for year {year} already exists in this organization.")
 
 
 
@@ -2556,7 +2355,7 @@ class FiscalPeriodAdminForm(forms.ModelForm):
 
 
 
-class PolicyAdminForm(forms.ModelForm):
+class PolicyAdminForm(BootstrapValidationMixin, forms.ModelForm):
     steps_data = forms.CharField(widget=forms.HiddenInput(), required=False)
 
     class Meta:
@@ -2620,6 +2419,15 @@ class PolicyAdminForm(forms.ModelForm):
         self.request = request
         super().__init__(*args, **kwargs)
 
+        self.fields["name"].required = True
+        self.fields["module"].required = True
+        self.fields["min_amount"].required = True
+        self.fields["currency"].required = False
+        self.fields["status"].required = False
+        self.fields["name"].error_messages["required"] = "Policy Name is required."
+        self.fields["module"].error_messages["required"] = "Module is required."
+        self.fields["min_amount"].error_messages["required"] = "Minimum amount is required."
+
         scoped_org = _get_form_scoped_org(request)
         if not scoped_org and self.instance and getattr(self.instance, "organization_id", None):
             scoped_org = self.instance.organization
@@ -2679,25 +2487,88 @@ class PolicyAdminForm(forms.ModelForm):
 
     def clean(self):
         cleaned_data = super().clean()
+        name = cleaned_data.get("name")
+        module = cleaned_data.get("module")
         min_amount = cleaned_data.get("min_amount")
         max_amount = cleaned_data.get("max_amount")
         department = cleaned_data.get("department")
         cost_center = cleaned_data.get("cost_center")
         org = cleaned_data.get("organization") or _get_form_scoped_org(self.request)
-        module = cleaned_data.get("module")
         is_active = cleaned_data.get("is_active", True)
         status = cleaned_data.get("status", ApprovalPolicy.STATUS_ACTIVE)
 
-        if min_amount is not None and min_amount < Decimal("0.00"):
+        if not cleaned_data.get("currency"):
+            cleaned_data["currency"] = "INR"
+        if not cleaned_data.get("status"):
+            cleaned_data["status"] = ApprovalPolicy.STATUS_ACTIVE
+
+        if not name or not name.strip():
+            self.add_error("name", "Policy Name is required.")
+        elif len(name.strip()) < 2:
+            self.add_error("name", "Policy Name must be at least 2 characters.")
+        elif len(name.strip()) > 150:
+            self.add_error("name", "Policy Name cannot exceed 150 characters.")
+        else:
+            cleaned_data["name"] = name.strip()
+
+        if not module:
+            self.add_error("module", "Module is required.")
+
+        if min_amount is None:
+            self.add_error("min_amount", "Minimum amount is required.")
+        elif min_amount < Decimal("0.00"):
             self.add_error("min_amount", "Minimum amount cannot be negative.")
 
-        if min_amount is not None and max_amount is not None:
-            if min_amount > max_amount:
+        if max_amount is not None:
+            if max_amount < Decimal("0.00"):
+                self.add_error("max_amount", "Maximum amount cannot be negative.")
+            elif min_amount is not None and min_amount > max_amount:
                 self.add_error("min_amount", "Minimum amount cannot be greater than maximum amount.")
+                self.add_error("max_amount", "Maximum amount must be greater than or equal to minimum amount.")
 
         if department and cost_center:
             if cost_center.department_id != department.id:
                 self.add_error("cost_center", f"Cost Center '{cost_center.code}' does not belong to Department '{department.name}'.")
+
+        # Step 3: Exception routing validation
+        if cleaned_data.get("has_exception_routing"):
+            if not cleaned_data.get("exception_approver_role"):
+                self.add_error("exception_approver_role", "Exception Approver Role is required when exception routing is enabled.")
+            exc_threshold = cleaned_data.get("exception_amount_threshold")
+            if exc_threshold is not None and exc_threshold < Decimal("0.00"):
+                self.add_error("exception_amount_threshold", "Exception Amount Threshold cannot be negative.")
+            exc_hours = cleaned_data.get("exception_escalation_time_hours")
+            if exc_hours is not None and exc_hours < 1:
+                self.add_error("exception_escalation_time_hours", "Escalation Window must be at least 1 hour.")
+
+        # Step 2: Sequence steps validation (when steps_data is provided in submission)
+        raw_steps_data = self.data.get("steps_data")
+        if raw_steps_data is not None:
+            import json
+            try:
+                steps_list = json.loads(raw_steps_data)
+                if not isinstance(steps_list, list) or len(steps_list) == 0:
+                    self.add_error("steps_data", "At least one approval level is required in the sequence.")
+                else:
+                    for idx, s in enumerate(steps_list, start=1):
+                        if not s.get("role_id"):
+                            self.add_error("steps_data", f"Select an Approver Role for Level {idx}.")
+                        if s.get("approval_limit") is not None and str(s.get("approval_limit")).strip() != "":
+                            try:
+                                lim = Decimal(str(s["approval_limit"]))
+                                if lim <= Decimal("0.00"):
+                                    self.add_error("steps_data", f"Step Limit for Level {idx} must be a positive amount.")
+                            except Exception:
+                                self.add_error("steps_data", f"Invalid Step Limit for Level {idx}.")
+                        if s.get("escalation_hours") is not None and str(s.get("escalation_hours")).strip() != "":
+                            try:
+                                hrs = int(s["escalation_hours"])
+                                if hrs < 1:
+                                    self.add_error("steps_data", f"Escalation SLA for Level {idx} must be at least 1 hour.")
+                            except Exception:
+                                self.add_error("steps_data", f"Invalid Escalation SLA for Level {idx}.")
+            except Exception:
+                self.add_error("steps_data", "Invalid approval sequence configuration.")
 
         # Conflict & Overlap Detection for Active Policies
         if is_active and status == ApprovalPolicy.STATUS_ACTIVE and module:
@@ -2840,7 +2711,7 @@ class PolicyAdminForm(forms.ModelForm):
 
 
 
-class LocationAdminForm(forms.ModelForm):
+class LocationAdminForm(BootstrapValidationMixin, forms.ModelForm):
 
     class Meta:
 
@@ -2900,7 +2771,11 @@ class LocationAdminForm(forms.ModelForm):
         self.fields["name"].required = True
         self.fields["code"].required = True
         self.fields["city"].required = True
-        self.fields["city"].error_messages["required"] = "City is mandatory for location."
+        self.fields["organization"].required = True
+        self.fields["name"].error_messages["required"] = "Location Name is required."
+        self.fields["code"].error_messages["required"] = "Location Code is required."
+        self.fields["city"].error_messages["required"] = "City is required."
+        self.fields["organization"].error_messages["required"] = "Parent Organization is required."
         scoped_org = _get_form_scoped_org(request)
         if scoped_org:
             self.fields["organization"].queryset = Organization.objects.filter(id=scoped_org.id)
@@ -2914,46 +2789,32 @@ class LocationAdminForm(forms.ModelForm):
             self.fields["country"].initial = "India"
             self.fields["is_active"].initial = True
 
+    def clean_organization(self):
+        org = self.cleaned_data.get("organization")
+        if not org:
+            raise forms.ValidationError("Parent Organization is required.")
+        scoped_org = _get_form_scoped_org(self.request)
+        if scoped_org and org and org.id != scoped_org.id:
+            raise forms.ValidationError("You cannot assign a location to another organization.")
+        return org
+
     def clean_name(self):
         name = (self.cleaned_data.get("name") or "").strip()
-        if not name:
-            raise forms.ValidationError("Location name is required.")
-        if len(name) < 2 or len(name) > 150:
-            raise forms.ValidationError("Location name must be between 2 and 150 characters.")
-        return name
+        return validate_name_has_letters(name, field_label="Location Name", min_len=2, max_len=150)
 
     def clean_city(self):
         city = (self.cleaned_data.get("city") or "").strip()
-        if not city:
-            raise forms.ValidationError("City is mandatory for location.")
-        if len(city) < 2 or len(city) > 100:
-            raise forms.ValidationError("City must be between 2 and 100 characters.")
-        import re
-        if not re.match(r"^[A-Za-z0-9\s\.\-']+$", city):
-            raise forms.ValidationError("City contains invalid characters.")
-        return city
+        return validate_city_has_letters(city, field_label="City", min_len=2, max_len=100)
 
     def clean_code(self):
-
-        code = self.cleaned_data.get("code", "").strip().upper()
-
-        if not code:
-
-            raise forms.ValidationError("Location code is required.")
-
+        code = (self.cleaned_data.get("code") or "").strip().upper()
+        code = validate_code_has_letters(code, field_label="Location Code", min_len=2, max_len=50)
         org = self.cleaned_data.get("organization") or _get_form_scoped_org(self.request)
-
         if org:
-
             qs = Location.objects.filter(organization=org, code=code)
-
             if self.instance and self.instance.pk:
-
                 qs = qs.exclude(pk=self.instance.pk)
-
             if qs.exists():
-
                 raise forms.ValidationError(f"Location code '{code}' already exists for {org.name}.")
-
         return code
 

@@ -154,15 +154,15 @@
             <div class="card border-0 shadow-sm rounded-4 bg-white p-3 mb-4">
                 <div class="row g-2 align-items-center">
                     <!-- Search Bar -->
-                    <div class="col-12 col-md-3">
+                    <div class="col-12 col-md-4 col-xl-4">
                         <div class="input-group input-group-sm">
                             <span class="input-group-text bg-slate-50 border"><i class="fa-solid fa-magnifying-glass text-muted"></i></span>
-                            <input type="text" id="vendorSearchInput" class="form-control" placeholder="Search supplier, TIN, code, email..." oninput="onVendorSearchInput()">
+                            <input type="text" id="vendorSearchInput" class="form-control" placeholder="Search by supplier name, TIN, or code" oninput="onVendorSearchInput()">
                         </div>
                     </div>
 
                     <!-- Risk Level Filter -->
-                    <div class="col-6 col-md-2">
+                    <div class="col-6 col-md-2 col-xl-2">
                         <select id="vendorRiskFilter" class="form-select form-select-sm" onchange="onVendorFilterChange()">
                             <option value="">All Risk Levels</option>
                             <option value="HIGH">High Risk</option>
@@ -172,7 +172,7 @@
                     </div>
 
                     <!-- Governance Status Filter -->
-                    <div class="col-6 col-md-2">
+                    <div class="col-6 col-md-2 col-xl-2">
                         <select id="vendorStatusFilter" class="form-select form-select-sm" onchange="onVendorFilterChange()">
                             <option value="">All Governance Statuses</option>
                             <option value="ACTIVE">Active (Authorized)</option>
@@ -186,7 +186,7 @@
                     </div>
 
                     <!-- Document Compliance Filter -->
-                    <div class="col-6 col-md-2">
+                    <div class="col-6 col-md-2 col-xl-2">
                         <select id="vendorComplianceFilter" class="form-select form-select-sm" onchange="onVendorFilterChange()">
                             <option value="">All Compliance States</option>
                             <option value="expiring_soon">Expiring Soon (30 Days)</option>
@@ -196,7 +196,7 @@
                     </div>
 
                     <!-- Sort Filter -->
-                    <div class="col-6 col-md-3">
+                    <div class="col-6 col-md-2 col-xl-2">
                         <select id="vendorSortFilter" class="form-select form-select-sm" onchange="onVendorFilterChange()">
                             <option value="-created_at">Sort: Newest First</option>
                             <option value="legal_name">Sort: Name (A-Z)</option>
@@ -278,27 +278,37 @@
                 <!-- Column 1: Authoritative Governance Action Execution Desk (7 cols) -->
                 <div class="col-lg-7">
                     <div class="card bg-white rounded-4 border shadow-xs p-4 h-100">
-                        <div class="d-flex justify-content-between align-items-center mb-3">
+                        <div class="d-flex flex-column flex-sm-row justify-content-between align-items-start align-items-sm-center mb-3 gap-2">
                             <div>
-                                <h5 class="fw-bold text-dark mb-1">
-                                    <i class="fa-solid fa-scale-balanced text-primary me-2"></i> Governance Action Formulation
+                                <h5 class="fw-bold text-dark mb-1" id="govFormulationTitle">
+                                    <i class="fa-solid fa-ban text-danger me-2" id="govTitleIcon"></i> <span id="govTitleText">Vendor Sanctions & Administrative Suspension</span>
                                 </h5>
-                                <p class="text-muted small mb-0">Select target supplier, inspect real-time transaction exposure, and record audit-backed status changes.</p>
+                                <p class="text-muted small mb-0" id="govFormulationSubtitle">Select an active supplier of your organization to place on administrative hold or execute sanctions/suspension.</p>
                             </div>
                             <span class="badge bg-primary-subtle text-primary border border-primary-subtle rounded-pill px-3 py-1 fw-bold" style="font-size: 0.7rem;">
                                 MANAGER RBAC
                             </span>
                         </div>
 
+                        <!-- Mode Switcher: Suspension/Hold vs Reinstatement -->
+                        <div class="p-1 bg-light rounded-pill border d-inline-flex gap-1 mb-3" role="group" aria-label="Governance Mode">
+                            <button type="button" class="btn btn-sm rounded-pill px-3 py-1 fw-bold btn-danger shadow-xs" id="govModeSuspendBtn" onclick="switchGovMode('SUSPEND')">
+                                <i class="fa-solid fa-ban me-1"></i> Suspend / Hold Supplier
+                            </button>
+                            <button type="button" class="btn btn-sm rounded-pill px-3 py-1 fw-bold text-secondary" id="govModeReinstateBtn" onclick="switchGovMode('REINSTATE')">
+                                <i class="fa-solid fa-rotate-left me-1"></i> Reinstate Suspended Supplier
+                            </button>
+                        </div>
+
                         <!-- Step 1: Select Supplier -->
                         <div class="mb-3">
-                            <label class="form-label small fw-bold text-dark mb-1">
-                                Select Target Supplier <span class="text-danger">*</span>
+                            <label class="form-label small fw-bold text-dark mb-1" id="govVendorSelectLabel">
+                                Select Active Supplier to Suspend / Hold <span class="text-danger">*</span>
                             </label>
                             <div class="input-group">
                                 <span class="input-group-text bg-light border"><i class="fa-solid fa-magnifying-glass text-muted"></i></span>
                                 <select id="govVendorSelect" class="form-select" onchange="onVendorSelectionChanged()">
-                                    <option value="">-- Choose a supplier to govern --</option>
+                                    <option value="">-- Choose an active supplier --</option>
                                 </select>
                             </div>
                         </div>
@@ -522,11 +532,11 @@
 <div class="modal fade" id="vendorRiskModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
         <div class="modal-content bg-white rounded-4 border-0 shadow-lg overflow-hidden">
-            <div class="modal-header bg-dark text-white px-4 py-3">
-                <h6 class="modal-title fw-bold font-heading d-flex align-items-center gap-2 mb-0">
+            <div class="modal-header px-4 py-3" style="background-color: #F9FAFB !important; border-bottom: 1px solid #E5E7EB !important;">
+                <h6 class="modal-title fw-bold font-heading d-flex align-items-center gap-2 mb-0" style="color: #111827 !important;">
                     <i class="fa-solid fa-triangle-exclamation text-warning"></i> Record Vendor Risk Assessment
                 </h6>
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body p-4">
                 <input type="hidden" id="riskVendorId">
@@ -576,12 +586,12 @@
 <div class="modal fade" id="vendorDossierModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
         <div class="modal-content bg-white rounded-4 border-0 shadow-lg overflow-hidden">
-            <div class="modal-header bg-dark text-white px-4 py-3">
+            <div class="modal-header px-4 py-3" style="background-color: #F9FAFB !important; border-bottom: 1px solid #E5E7EB !important;">
                 <div class="d-flex align-items-center gap-2">
                     <span class="badge bg-danger text-white fw-bold px-2 py-1 rounded" id="dossierBadge">DOSSIER</span>
-                    <h5 class="modal-title fw-bold font-heading mb-0" id="dossierVendorName">Supplier Compliance Dossier</h5>
+                    <h5 class="modal-title fw-bold font-heading mb-0" id="dossierVendorName" style="color: #111827 !important;">Supplier Compliance Dossier</h5>
                 </div>
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body p-4">
                 <!-- Top Summary Ribbon -->
@@ -761,19 +771,18 @@
         }
 
         // Pre-select vendor and action if provided
-        if (targetVendorId) {
-            const selectEl = document.getElementById('govVendorSelect');
-            if (selectEl) {
-                selectEl.value = targetVendorId;
-                await onVendorSelectionChanged();
+        if (targetVendorId || initialAction) {
+            const isReinstate = (initialAction === 'ACTIVE' || initialAction === 'REINSTATE');
+            switchGovMode(isReinstate ? 'REINSTATE' : 'SUSPEND', targetVendorId);
+            if (initialAction) {
+                const actionEl = document.getElementById('govActionSelect');
+                if (actionEl) {
+                    actionEl.value = (initialAction === 'REINSTATE' ? 'ACTIVE' : initialAction);
+                    onActionOptionChanged();
+                }
             }
-        }
-        if (initialAction) {
-            const actionEl = document.getElementById('govActionSelect');
-            if (actionEl) {
-                actionEl.value = initialAction;
-                onActionOptionChanged();
-            }
+        } else {
+            switchGovMode('SUSPEND');
         }
     }
 
@@ -796,15 +805,13 @@
         activateTab('suspension');
         onTabChanged('suspension');
 
-        const selectEl = document.getElementById('govVendorSelect');
-        if (selectEl) {
-            selectEl.value = vendorId;
-            onVendorSelectionChanged();
-        }
+        const isReinstate = (action === 'ACTIVE' || action === 'REINSTATE');
+        switchGovMode(isReinstate ? 'REINSTATE' : 'SUSPEND', vendorId);
+
         if (action) {
             const actionEl = document.getElementById('govActionSelect');
             if (actionEl) {
-                actionEl.value = action;
+                actionEl.value = (action === 'REINSTATE' ? 'ACTIVE' : action);
                 onActionOptionChanged();
             }
         }
@@ -855,7 +862,7 @@
 
         try {
             const [vendorsRes, summaryRes] = await Promise.all([
-                fetchManagerAPI('/api/v1/vendors/?page_size=250'),
+                fetchManagerAPI('/api/v1/vendors/?paginate=false&page_size=1000'),
                 fetchManagerAPI('/api/v1/vendors/summary/').catch(() => null)
             ]);
 
@@ -887,7 +894,8 @@
 
     function renderVendorKpis(summary) {
         document.getElementById('kpiTotalVendors').textContent = summary.total_vendors || 0;
-        document.getElementById('kpiActiveVendors').textContent = (summary.active_vendors || 0) + ' active';
+        const opCount = summary.monitored_operational_vendors || ((summary.active_vendors || 0) + (summary.on_hold_vendors || 0) + (summary.suspended_vendors || 0));
+        document.getElementById('kpiActiveVendors').textContent = `${summary.active_vendors || 0} active (${opCount} governed)`;
         document.getElementById('kpiHighRisk').textContent = summary.high_risk_vendors || 0;
         document.getElementById('kpiMediumRisk').textContent = summary.medium_risk_vendors || 0;
         document.getElementById('kpiOnHold').textContent = summary.on_hold_vendors || 0;
@@ -917,19 +925,166 @@
         });
     }
 
-    function populateSuspensionSelect(vendors) {
+    let currentGovMode = 'SUSPEND'; // 'SUSPEND' or 'REINSTATE'
+
+    function switchGovMode(mode, preselectVendorId = null) {
+        currentGovMode = (mode || 'SUSPEND').toUpperCase();
+        const suspendBtn = document.getElementById('govModeSuspendBtn');
+        const reinstateBtn = document.getElementById('govModeReinstateBtn');
+        const titleIcon = document.getElementById('govTitleIcon');
+        const titleText = document.getElementById('govTitleText');
+        const subtitle = document.getElementById('govFormulationSubtitle');
+        const selectLabel = document.getElementById('govVendorSelectLabel');
+        const actionSelect = document.getElementById('govActionSelect');
+
+        if (currentGovMode === 'REINSTATE') {
+            if (suspendBtn) {
+                suspendBtn.className = 'btn btn-sm rounded-pill px-3 py-1 fw-bold text-secondary';
+            }
+            if (reinstateBtn) {
+                reinstateBtn.className = 'btn btn-sm rounded-pill px-3 py-1 fw-bold btn-success shadow-xs text-white';
+            }
+            if (titleIcon) titleIcon.className = 'fa-solid fa-rotate-left text-success me-2';
+            if (titleText) titleText.textContent = 'Vendor Reinstatement Desk';
+            if (subtitle) subtitle.textContent = 'Select a suspended or on-hold supplier to review resolution and restore active standing.';
+            if (selectLabel) selectLabel.innerHTML = 'Select Suspended / On-Hold Supplier to Reinstate <span class="text-danger">*</span>';
+
+            if (actionSelect) {
+                actionSelect.innerHTML = `
+                    <option value="ACTIVE" selected>Release / Reinstate to Active</option>
+                `;
+            }
+        } else {
+            currentGovMode = 'SUSPEND';
+            if (suspendBtn) {
+                suspendBtn.className = 'btn btn-sm rounded-pill px-3 py-1 fw-bold btn-danger shadow-xs text-white';
+            }
+            if (reinstateBtn) {
+                reinstateBtn.className = 'btn btn-sm rounded-pill px-3 py-1 fw-bold text-secondary';
+            }
+            if (titleIcon) titleIcon.className = 'fa-solid fa-ban text-danger me-2';
+            if (titleText) titleText.textContent = 'Vendor Sanctions & Administrative Suspension';
+            if (subtitle) subtitle.textContent = 'Select an active supplier of your organization to place on administrative hold or execute sanctions/suspension.';
+            if (selectLabel) selectLabel.innerHTML = 'Select Active Supplier to Suspend / Hold <span class="text-danger">*</span>';
+
+            if (actionSelect) {
+                actionSelect.innerHTML = `
+                    <option value="SUSPENDED" selected>Suspend / Blacklist (Sanctions &amp; Material Regulatory Breach)</option>
+                    <option value="ON_HOLD">Place On Hold (Restricted Bidding &amp; POs)</option>
+                `;
+            }
+        }
+
+        populateSuspensionSelect(vendorDataCache, preselectVendorId);
+        onActionOptionChanged();
+    }
+
+    function populateSuspensionSelect(vendors, preselectVendorId = null) {
         const selectEl = document.getElementById('govVendorSelect');
         if (!selectEl) return;
-        const currentVal = selectEl.value;
+        const currentVal = preselectVendorId || selectEl.value;
 
-        let html = '<option value="">-- Choose a supplier to govern --</option>';
-        vendors.forEach(v => {
-            const statusLabel = v.status_display || v.status;
-            const riskLabel = v.current_risk_level ? `[${v.current_risk_level} RISK]` : '';
-            html += `<option value="${v.id}">${v.legal_name} (${v.vendor_number}) — ${statusLabel} ${riskLabel}</option>`;
-        });
+        const allList = (vendors || []);
+        const activeList = allList.filter(v => v.status === 'ACTIVE');
+        const onHoldList = allList.filter(v => v.status === 'ON_HOLD');
+        const suspendedList = allList.filter(v => v.status === 'SUSPENDED');
+        const otherList = allList.filter(v => !['ACTIVE', 'ON_HOLD', 'SUSPENDED'].includes(v.status));
+
+        // Prioritize enterprise suppliers over test accounts, then sort alphabetically by legal name
+        const sortFn = (a, b) => {
+            const aIsQA = /^qa\b|^test\b/i.test((a.legal_name || '').trim());
+            const bIsQA = /^qa\b|^test\b/i.test((b.legal_name || '').trim());
+            if (aIsQA !== bIsQA) return aIsQA ? 1 : -1;
+            return (a.legal_name || '').localeCompare(b.legal_name || '');
+        };
+
+        activeList.sort(sortFn);
+        onHoldList.sort(sortFn);
+        suspendedList.sort(sortFn);
+        otherList.sort(sortFn);
+
+        const placeholder = currentGovMode === 'REINSTATE'
+            ? `-- Choose a supplier to reinstate (${allList.length} monitored suppliers) --`
+            : `-- Choose a supplier to suspend or hold (${allList.length} monitored suppliers) --`;
+
+        let html = `<option value="">${placeholder}</option>`;
+
+        if (currentGovMode === 'REINSTATE') {
+            if (suspendedList.length > 0) {
+                html += `<optgroup label="Suspended / Blacklisted Suppliers (${suspendedList.length})">`;
+                suspendedList.forEach(v => {
+                    const riskLabel = v.current_risk_level ? `[${v.current_risk_level} RISK]` : '';
+                    html += `<option value="${v.id}">${v.legal_name} (${v.vendor_number}) — Suspended / Blacklisted ${riskLabel}</option>`;
+                });
+                html += `</optgroup>`;
+            }
+            if (onHoldList.length > 0) {
+                html += `<optgroup label="On-Hold Suppliers (${onHoldList.length})">`;
+                onHoldList.forEach(v => {
+                    const riskLabel = v.current_risk_level ? `[${v.current_risk_level} RISK]` : '';
+                    html += `<option value="${v.id}">${v.legal_name} (${v.vendor_number}) — On Hold ${riskLabel}</option>`;
+                });
+                html += `</optgroup>`;
+            }
+            if (activeList.length > 0) {
+                html += `<optgroup label="Active Suppliers (${activeList.length})">`;
+                activeList.forEach(v => {
+                    const riskLabel = v.current_risk_level ? `[${v.current_risk_level} RISK]` : '';
+                    html += `<option value="${v.id}">${v.legal_name} (${v.vendor_number}) — Active ${riskLabel}</option>`;
+                });
+                html += `</optgroup>`;
+            }
+            if (otherList.length > 0) {
+                html += `<optgroup label="Other Monitored Suppliers (${otherList.length})">`;
+                otherList.forEach(v => {
+                    const riskLabel = v.current_risk_level ? `[${v.current_risk_level} RISK]` : '';
+                    html += `<option value="${v.id}">${v.legal_name} (${v.vendor_number}) — ${v.status_display || v.status} ${riskLabel}</option>`;
+                });
+                html += `</optgroup>`;
+            }
+        } else {
+            if (activeList.length > 0) {
+                html += `<optgroup label="Active Suppliers (${activeList.length})">`;
+                activeList.forEach(v => {
+                    const riskLabel = v.current_risk_level ? `[${v.current_risk_level} RISK]` : '';
+                    html += `<option value="${v.id}">${v.legal_name} (${v.vendor_number}) — Active ${riskLabel}</option>`;
+                });
+                html += `</optgroup>`;
+            }
+            if (onHoldList.length > 0) {
+                html += `<optgroup label="On-Hold Suppliers (${onHoldList.length})">`;
+                onHoldList.forEach(v => {
+                    const riskLabel = v.current_risk_level ? `[${v.current_risk_level} RISK]` : '';
+                    html += `<option value="${v.id}">${v.legal_name} (${v.vendor_number}) — On Hold ${riskLabel}</option>`;
+                });
+                html += `</optgroup>`;
+            }
+            if (suspendedList.length > 0) {
+                html += `<optgroup label="Already Suspended / Blacklisted Suppliers (${suspendedList.length})">`;
+                suspendedList.forEach(v => {
+                    const riskLabel = v.current_risk_level ? `[${v.current_risk_level} RISK]` : '';
+                    html += `<option value="${v.id}">${v.legal_name} (${v.vendor_number}) — Suspended ${riskLabel}</option>`;
+                });
+                html += `</optgroup>`;
+            }
+            if (otherList.length > 0) {
+                html += `<optgroup label="Other Monitored Suppliers (${otherList.length})">`;
+                otherList.forEach(v => {
+                    const riskLabel = v.current_risk_level ? `[${v.current_risk_level} RISK]` : '';
+                    html += `<option value="${v.id}">${v.legal_name} (${v.vendor_number}) — ${v.status_display || v.status} ${riskLabel}</option>`;
+                });
+                html += `</optgroup>`;
+            }
+        }
+
         selectEl.innerHTML = html;
-        if (currentVal) selectEl.value = currentVal;
+
+        if (currentVal && allList.some(v => v.id === currentVal)) {
+            selectEl.value = currentVal;
+        } else {
+            selectEl.value = '';
+        }
+        onVendorSelectionChanged();
     }
 
     // -------------------------------------------------------------
@@ -1347,7 +1502,8 @@
                 })
             });
 
-            showManagerToast(res.message || `Governance action applied: Supplier status is now ${action}.`, 'success');
+            const successMsg = res.message || (action === 'SUSPENDED' ? 'Vendor is suspended' : `Governance action applied: Supplier status is now ${action}.`);
+            showManagerToast(successMsg, 'success');
             document.getElementById('govReasonTextarea').value = '';
 
             // Reload data
@@ -1355,7 +1511,10 @@
             document.getElementById('govVendorSelect').value = vendorId;
             await onVendorSelectionChanged();
         } catch (err) {
-            showManagerToast(err.message || 'Failed to apply governance action.', 'danger');
+            const errorMsg = (typeof safeExtractErrorMessage === 'function')
+                ? safeExtractErrorMessage(err, 'Failed to apply governance action.')
+                : (err && err.message ? err.message : 'Failed to apply governance action.');
+            showManagerToast(errorMsg, 'danger');
         } finally {
             btn.disabled = false;
             btn.innerHTML = originalHtml;
@@ -1602,7 +1761,10 @@
 
             reloadRiskDesk();
         } catch (err) {
-            showManagerToast(err.message || 'Failed to record risk assessment.', 'danger');
+            const errorMsg = (typeof safeExtractErrorMessage === 'function')
+                ? safeExtractErrorMessage(err, 'Failed to record risk assessment.')
+                : (err && err.message ? err.message : 'Failed to record risk assessment.');
+            showManagerToast(errorMsg, 'danger');
         } finally {
             submitBtn.disabled = false;
             submitBtn.innerHTML = 'Record Assessment';

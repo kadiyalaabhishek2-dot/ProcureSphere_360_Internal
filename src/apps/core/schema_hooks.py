@@ -58,6 +58,18 @@ def custom_postprocessing_hook(result, generator, request, public):
             if not paths[path]:
                 paths.pop(path, None)
 
+    # Exclude internal UI AJAX / session polling endpoints not in public API inventory
+    internal_paths = [
+        "/api/v1/admin/dashboard/",
+        "/api/v1/superadmin/dashboard/",
+        "/api/v1/approver/dashboard/",
+        "/api/v1/approver/queue/",
+        "/api/v1/approver/decision/",
+        "/api/v1/auth/session-keepalive/",
+    ]
+    for ip in internal_paths:
+        paths.pop(ip, None)
+
     for path, path_item in paths.items():
         for method, operation in path_item.items():
             if method.lower() not in ["get", "post", "put", "patch", "delete"]:

@@ -26,7 +26,7 @@
         <a href="{% url 'sourcing_list' %}" class="btn btn-outline-secondary rounded-pill px-3"><i class="fa-solid fa-arrow-left me-1"></i>Register</a>
         {% endif %}
         {% if caps.can_manage %}
-            {% if event.status == 'DRAFT' %}
+            {% if event.status == 'DRAFT' and caps.can_publish %}
                 <a href="{% url 'sourcing_edit' event.id %}" class="btn btn-outline-primary rounded-pill px-3"><i class="fa-solid fa-pen me-1"></i>Edit draft</a>
                 <form method="post" action="{% url 'sourcing_action' event.id 'publish' %}">{% csrf_token %}
                     <button class="btn btn-warning text-dark fw-bold rounded-pill px-3" {% if publish_errors %}disabled title="Resolve publish checks first"{% endif %}><i class="fa-solid fa-bullhorn me-1"></i>Publish</button>
@@ -280,7 +280,7 @@
                 <thead><tr><th>Timestamp</th><th>Actor</th><th>Action</th><th>Object</th><th>Previous</th><th>Updated</th></tr></thead>
                 <tbody>
                 {% for log in audit_trail %}
-                    <tr><td class="text-nowrap">{{ log.timestamp|date:"Y-m-d H:i:s" }}</td><td>{{ log.actor_email }}</td><td>{{ log.get_action_display }}</td><td>{{ log.target_model }}</td><td><code class="text-wrap">{{ log.previous_state|default:"—" }}</code></td><td><code class="text-wrap">{{ log.new_state|default:"—" }}</code></td></tr>
+                    <tr><td class="text-nowrap">{{ log.timestamp|date:"Y-m-d H:i:s" }}</td><td>{{ log.actor_email }}</td><td><span class="badge bg-light text-dark border">{{ log|format_audit_action }}</span></td><td>{{ log.target_model }}</td><td>{{ log.previous_state|format_audit_state:log }}</td><td>{{ log|format_audit_updated_state }}</td></tr>
                 {% empty %}<tr><td colspan="6" class="text-muted text-center py-3">No audit records.</td></tr>{% endfor %}
                 </tbody>
             </table></div>

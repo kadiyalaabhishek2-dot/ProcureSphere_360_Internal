@@ -1,3 +1,4 @@
+from django.db.models import Q
 from django.http import HttpResponse
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import status, viewsets
@@ -6,6 +7,7 @@ from rest_framework.pagination import LimitOffsetPagination
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from apps.accounts.models import Role
 from apps.audit.models import AuditLog
 from apps.audit.permissions import AuditorReadOnlyPermission, IsAuditorOrSuperAdmin
 from apps.audit.selectors import (
@@ -44,12 +46,74 @@ class AuditLogPagination(LimitOffsetPagination):
     max_limit = 100
 
     def paginate_queryset(self, queryset, request, view=None):
-        if "page_size" in request.query_params and "limit" not in request.query_params:
+        self.request = request
+        paginate_param = request.query_params.get("paginate", "").lower()
+        pagination_param = request.query_params.get("pagination", "").lower()
+        dropdown_param = request.query_params.get("dropdown", "").lower()
+        page_size_param_raw = request.query_params.get("page_size", "").lower()
+        if (
+            paginate_param in ("false", "0", "no")
+            or pagination_param in ("none", "false", "0", "no")
+            or dropdown_param in ("true", "1", "yes")
+            or page_size_param_raw in ("all", "0", "-1")
+        ):
+            return None
+
+        page_param = request.query_params.get("page")
+        page_size_param = request.query_params.get("page_size") or request.query_params.get("limit")
+
+        if page_size_param is not None:
             try:
-                self.limit = int(request.query_params["page_size"])
+                self.limit = max(1, min(int(page_size_param), 1000))
             except (ValueError, TypeError):
-                pass
+                self.limit = self.default_limit
+        else:
+            self.limit = self.default_limit
+
+        if page_param is not None and "offset" not in request.query_params:
+            try:
+                self.page_number = int(page_param)
+            except (ValueError, TypeError):
+                self.page_number = 1
+
+            if self.page_number < 1:
+                from rest_framework.exceptions import NotFound
+                raise NotFound("Invalid page.")
+
+            self.count = self.get_count(queryset)
+            self.offset = (self.page_number - 1) * self.limit
+
+            if self.count > 0 and self.offset >= self.count:
+                from rest_framework.exceptions import NotFound
+                raise NotFound("Invalid page.")
+
+            if self.count == 0 or self.offset > self.count:
+                return []
+
+            return list(queryset[self.offset : self.offset + self.limit])
+
+        self.page_number = None
         return super().paginate_queryset(queryset, request, view)
+
+    def get_next_link(self):
+        if hasattr(self, "page_number") and self.page_number is not None:
+            if self.offset + self.limit >= self.count:
+                return None
+            url = self.request.build_absolute_uri()
+            from rest_framework.utils.urls import replace_query_param
+            return replace_query_param(url, "page", self.page_number + 1)
+        return super().get_next_link()
+
+    def get_previous_link(self):
+        if hasattr(self, "page_number") and self.page_number is not None:
+            if self.page_number <= 1:
+                return None
+            url = self.request.build_absolute_uri()
+            from rest_framework.utils.urls import remove_query_param, replace_query_param
+            if self.page_number == 2:
+                return remove_query_param(url, "page")
+            return replace_query_param(url, "page", self.page_number - 1)
+        return super().get_previous_link()
 
     def get_paginated_response(self, data):
         return Response({
@@ -64,9 +128,28 @@ class AuditLogPagination(LimitOffsetPagination):
 
 
 def _get_auditor_org(request):
-    user = request.user
-    if user.is_superuser:
+    user = getattr(request, "user", None) if request else None
+    if not user or getattr(user, "is_superuser", False):
         return None
+
+    req_org = None
+    if hasattr(request, "query_params"):
+        req_org = request.query_params.get("org") or request.query_params.get("organization")
+    if not req_org and hasattr(request, "GET"):
+        req_org = request.GET.get("org") or request.GET.get("organization")
+    if req_org:
+        from apps.organization.models import Organization
+        try:
+            return Organization.objects.filter(Q(id=req_org) | Q(code=req_org)).first()
+        except Exception:
+            pass
+
+    role_code = getattr(user, "role_code", None) or (
+        user.role.code if getattr(user, "role", None) else None
+    )
+    if role_code in [Role.AUDITOR, Role.SUPER_ADMIN, "AUDITOR", "SUPER_ADMIN"]:
+        return None
+
     return getattr(user, "effective_organization", None) or getattr(user, "organization", None)
 
 
@@ -80,12 +163,13 @@ class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = AuditLogListSerializer
     pagination_class = AuditLogPagination
     permission_classes = [IsAuthenticated, IsAuditorOrSuperAdmin, AuditorReadOnlyPermission]
+    ordering = ["-timestamp", "-id"]
 
     def get_queryset(self):
         org = _get_auditor_org(self.request)
         return get_scoped_audit_logs_queryset(
             AuditLog.objects.select_related("actor").all(), organization=org
-        )
+        ).order_by("-timestamp", "-id")
 
     def get_serializer_class(self):
         if self.action == "retrieve":
@@ -188,6 +272,8 @@ class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
                 | Q(action__icontains=s)
                 | Q(target_model__icontains=s)
                 | Q(target_object_id__icontains=s)
+                | Q(new_state__pr_number__icontains=s)
+                | Q(previous_state__pr_number__icontains=s)
             )
             if matched_ids:
                 search_filter |= Q(target_object_id__in=matched_ids)
@@ -261,14 +347,15 @@ class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
 
         identifier = query_serializer.validated_data.get("identifier")
         if not identifier:
-            from apps.orders.models import PurchaseOrder
             from apps.requisitions.models import PurchaseRequisition
-            first_pr = PurchaseRequisition.objects.order_by("-created_at").first()
-            if first_pr:
-                identifier = first_pr.pr_number
+            latest_pr = PurchaseRequisition.objects.order_by("-created_at").first()
+            if latest_pr:
+                identifier = latest_pr.pr_number
             else:
-                first_po = PurchaseOrder.objects.order_by("-created_at").first()
-                identifier = first_po.po_number if first_po else "PR-2026-00001"
+                return Response(
+                    {"error": {"code": "VALIDATION_ERROR", "message": "Query parameter 'identifier' is required."}},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
         entity_type = query_serializer.validated_data.get("entity_type", "AUTO")
         org = _get_auditor_org(request)
 
@@ -328,10 +415,11 @@ class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
         model_name = query_serializer.validated_data.get("target_model")
         obj_id = query_serializer.validated_data.get("target_object_id")
         if not model_name or not obj_id:
-            first_log = AuditLog.objects.order_by("-timestamp").first()
-            if first_log:
-                model_name = model_name or first_log.target_model
-                obj_id = obj_id or first_log.target_object_id
+            from apps.audit.models import AuditLog
+            latest_log = AuditLog.objects.exclude(target_model="").order_by("-timestamp").first()
+            if latest_log:
+                model_name = model_name or latest_log.target_model
+                obj_id = obj_id or str(latest_log.target_object_id)
             else:
                 return Response(
                     {"error": {"code": "VALIDATION_ERROR", "message": "Query parameters 'target_model' and 'target_object_id' are required."}},
@@ -787,14 +875,15 @@ def auditor_lifecycle_api_view(request):
     data = serializer.validated_data
     identifier = data.get("identifier")
     if not identifier:
-        from apps.orders.models import PurchaseOrder
         from apps.requisitions.models import PurchaseRequisition
-        first_pr = PurchaseRequisition.objects.order_by("-created_at").first()
-        if first_pr:
-            identifier = first_pr.pr_number
+        latest_pr = PurchaseRequisition.objects.order_by("-created_at").first()
+        if latest_pr:
+            identifier = latest_pr.pr_number
         else:
-            first_po = PurchaseOrder.objects.order_by("-created_at").first()
-            identifier = first_po.po_number if first_po else "PR-2026-00001"
+            return Response(
+                {"error": {"code": "VALIDATION_ERROR", "message": "Query parameter 'identifier' is required."}},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
     org = _get_auditor_org(request)
     lifecycle_data = get_transaction_lifecycle_service(
         entity_type=data.get("entity_type", "AUTO"),

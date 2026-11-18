@@ -147,10 +147,15 @@
                 </div>
             </div>
             {% if orgs|length > 5 %}
-            <div class="card-footer bg-white border-top py-3 text-center" id="orgToggleFooter">
-                <button type="button" class="btn btn-sm btn-outline-primary rounded-pill px-4 fw-semibold shadow-2xs" id="toggleOrgBtn" onclick="toggleSectionRows('org', {{ orgs|length|add:'-5' }})">
-                    <span id="toggleOrgText"><i class="fa-solid fa-chevron-down me-1"></i> Show More ({{ orgs|length|add:'-5' }} more)</span>
-                </button>
+            <div class="card-footer bg-white border-top py-3 px-4 d-flex flex-wrap justify-content-between align-items-center gap-3" id="orgToggleFooter">
+                <div class="d-flex align-items-center gap-2">
+                    <button type="button" class="btn btn-sm btn-outline-primary rounded-pill px-4 fw-semibold shadow-2xs" id="toggleOrgBtn" onclick="toggleSectionRows('org', {{ orgs|length|add:'-5' }})">
+                        <span id="toggleOrgText"><i class="fa-solid fa-chevron-down me-1"></i> Show More ({{ orgs|length|add:'-5' }} more)</span>
+                    </button>
+                    <span class="text-muted small" id="orgShowingCount">
+                        Showing <strong>5</strong> of <strong>{{ orgs|length }}</strong> organizations
+                    </span>
+                </div>
             </div>
             {% endif %}
         </div>
@@ -177,9 +182,14 @@
                                 <span class="badge bg-primary bg-opacity-10 text-primary fw-bold font-monospace px-2 py-1 rounded small">{{ dept.code }}</span>
                                 <div class="fw-bold text-dark fs-6 mt-1">{{ dept.name }}</div>
                             </div>
-                            <button hx-get="/superadmin/departments/{{ dept.pk }}/edit/" hx-target="#modal-content-body" data-bs-toggle="modal" data-bs-target="#modal-container" class="btn btn-sm btn-outline-secondary rounded-pill px-3">
-                                <i class="fa-solid fa-pen-to-square me-1"></i> Edit
-                            </button>
+                            <div class="d-flex gap-1">
+                                <button hx-get="/superadmin/departments/{{ dept.pk }}/edit/" hx-target="#modal-content-body" data-bs-toggle="modal" data-bs-target="#modal-container" class="btn btn-sm btn-outline-secondary rounded-pill px-3">
+                                    <i class="fa-solid fa-pen-to-square me-1"></i> Edit
+                                </button>
+                                <button hx-post="/superadmin/departments/{{ dept.pk }}/delete/" hx-confirm="Are you sure you want to delete Department '{{ dept.name }}' ({{ dept.code }})?" class="btn btn-sm btn-outline-danger rounded-pill px-3" title="Delete Department">
+                                    <i class="fa-solid fa-trash me-1"></i> Delete
+                                </button>
+                            </div>
                         </div>
                         <div class="small text-muted mb-1">
                             <span class="badge bg-light text-dark border">{{ dept.organization.name }} ({{ dept.organization.code }})</span>
@@ -215,9 +225,14 @@
                             </td>
                             <td class="text-muted small">{{ dept.description|default:"—" }}</td>
                             <td class="pe-4 text-end">
-                                <button hx-get="/superadmin/departments/{{ dept.pk }}/edit/" hx-target="#modal-content-body" data-bs-toggle="modal" data-bs-target="#modal-container" class="btn btn-sm btn-outline-secondary rounded-pill px-3">
-                                    <i class="fa-solid fa-pen-to-square me-1"></i> Edit
-                                </button>
+                                <div class="d-inline-flex align-items-center justify-content-end gap-1 flex-nowrap">
+                                    <button hx-get="/superadmin/departments/{{ dept.pk }}/edit/" hx-target="#modal-content-body" data-bs-toggle="modal" data-bs-target="#modal-container" class="btn btn-sm btn-outline-secondary rounded-pill px-3">
+                                        <i class="fa-solid fa-pen-to-square me-1"></i> Edit
+                                    </button>
+                                    <button hx-post="/superadmin/departments/{{ dept.pk }}/delete/" hx-confirm="Are you sure you want to delete Department '{{ dept.name }}' ({{ dept.code }})?" class="btn btn-sm btn-outline-danger rounded-pill px-3" title="Delete Department">
+                                        <i class="fa-solid fa-trash me-1"></i> Delete
+                                    </button>
+                                </div>
                             </td>
                         </tr>
                         {% empty %}
@@ -243,16 +258,6 @@
                     <p class="text-muted small mb-0">Financial tracking units tied to departments.</p>
                 </div>
                 <div class="d-flex flex-column flex-sm-row align-items-stretch align-items-sm-center gap-2 w-100 w-sm-auto">
-                    <form method="get" class="d-flex align-items-center mb-0 w-100 w-sm-auto">
-                        <select name="department" class="form-select form-select-sm rounded-pill w-100" onchange="this.form.submit()" style="min-width: 170px;">
-                            <option value="">-- All Departments --</option>
-                            {% for dept in departments %}
-                            <option value="{{ dept.pk }}" {% if selected_dept == dept.pk|stringformat:"s" %}selected{% endif %}>
-                                {{ dept.name }} ({{ dept.code }})
-                            </option>
-                            {% endfor %}
-                        </select>
-                    </form>
                     <button hx-get="/superadmin/cost-centers/create/" hx-target="#modal-content-body" data-bs-toggle="modal" data-bs-target="#modal-container" class="btn btn-primary text-white fw-bold rounded-pill px-3 px-sm-4 shadow-sm btn-sm w-100 w-sm-auto text-nowrap">
                         <i class="fa-solid fa-plus me-1"></i> Add Cost Center
                     </button>
@@ -268,9 +273,14 @@
                                 <span class="badge bg-secondary bg-opacity-10 text-dark fw-bold font-monospace px-2 py-1 rounded small">{{ cc.code }}</span>
                                 <div class="fw-bold text-dark fs-6 mt-1">{{ cc.name }}</div>
                             </div>
-                            <button hx-get="/superadmin/cost-centers/{{ cc.pk }}/edit/" hx-target="#modal-content-body" data-bs-toggle="modal" data-bs-target="#modal-container" class="btn btn-sm btn-outline-secondary rounded-pill px-3">
-                                <i class="fa-solid fa-pen-to-square me-1"></i> Edit
-                            </button>
+                            <div class="d-flex gap-1">
+                                <button hx-get="/superadmin/cost-centers/{{ cc.pk }}/edit/" hx-target="#modal-content-body" data-bs-toggle="modal" data-bs-target="#modal-container" class="btn btn-sm btn-outline-secondary rounded-pill px-3">
+                                    <i class="fa-solid fa-pen-to-square me-1"></i> Edit
+                                </button>
+                                <button hx-post="/superadmin/cost-centers/{{ cc.pk }}/delete/" hx-confirm="Are you sure you want to delete Cost Center '{{ cc.name }}' ({{ cc.code }})?" class="btn btn-sm btn-outline-danger rounded-pill px-3" title="Delete Cost Center">
+                                    <i class="fa-solid fa-trash me-1"></i> Delete
+                                </button>
+                            </div>
                         </div>
                         <div class="small text-muted mb-2">
                             <span class="badge bg-light text-dark border">{{ cc.department.name }} ({{ cc.department.code }})</span>
@@ -324,9 +334,14 @@
                                 {% endif %}
                             </td>
                             <td class="pe-4 text-end">
-                                <button hx-get="/superadmin/cost-centers/{{ cc.pk }}/edit/" hx-target="#modal-content-body" data-bs-toggle="modal" data-bs-target="#modal-container" class="btn btn-sm btn-outline-secondary rounded-pill px-3">
-                                    <i class="fa-solid fa-pen-to-square me-1"></i> Edit
-                                </button>
+                                <div class="d-inline-flex align-items-center justify-content-end gap-1 flex-nowrap">
+                                    <button hx-get="/superadmin/cost-centers/{{ cc.pk }}/edit/" hx-target="#modal-content-body" data-bs-toggle="modal" data-bs-target="#modal-container" class="btn btn-sm btn-outline-secondary rounded-pill px-3">
+                                        <i class="fa-solid fa-pen-to-square me-1"></i> Edit
+                                    </button>
+                                    <button hx-post="/superadmin/cost-centers/{{ cc.pk }}/delete/" hx-confirm="Are you sure you want to delete Cost Center '{{ cc.name }}' ({{ cc.code }})?" class="btn btn-sm btn-outline-danger rounded-pill px-3" title="Delete Cost Center">
+                                        <i class="fa-solid fa-trash me-1"></i> Delete
+                                    </button>
+                                </div>
                             </td>
                         </tr>
                         {% empty %}

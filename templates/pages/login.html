@@ -17,6 +17,8 @@
     <link rel="manifest" href="{% static 'icons/site.webmanifest' %}">
     <meta name="theme-color" content="#ffffff">
 
+    <!-- CDN Preconnects -->
+    <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
     <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -576,7 +578,7 @@
     <div class="login-content-wrapper">
 
         <!-- Exit pill — embedded at top-right inside the login card -->
-        <a href="/" id="login-exit-btn" class="lm-exit-pill" aria-label="Exit to Home">
+        <a href="/?logged_out=1" id="login-exit-btn" class="lm-exit-pill" aria-label="Exit to Home" onclick="window.location.href='/?logged_out=1'; return false;">
             Exit
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
                 <line x1="18" y1="6" x2="6" y2="18"></line>
@@ -641,6 +643,18 @@
                         aria-label="Close alert">&times;</button>
                 </div>
                 {% endfor %}
+                {% endif %}
+
+                {% if session_expired_notice and not messages %}
+                <div class="login-alert-banner alert-info" data-session-expired-banner="true">
+                    <div style="display: flex; align-items: center; gap: 9px;">
+                        <i class="fa-solid fa-clock"></i>
+                        <span>{{ session_expired_notice }}</span>
+                    </div>
+                    <button type="button" onclick="this.closest('.login-alert-banner').remove()"
+                        style="background: none; border: none; font-size: 16px; cursor: pointer; color: inherit; padding: 0 4px; line-height: 1; opacity: 0.7;"
+                        aria-label="Close alert">&times;</button>
+                </div>
                 {% endif %}
 
                 <!-- Form -->
@@ -739,26 +753,107 @@
 
         const loginForm = document.getElementById('loginForm');
         if (loginForm) {
-            loginForm.addEventListener('submit', function () {
+            loginForm.addEventListener('submit', async function (e) {
+                e.preventDefault();
+                const submitBtn = document.getElementById('login-submit-btn');
+                const originalBtnHtml = submitBtn ? submitBtn.innerHTML : '';
+                if (submitBtn) {
+                    submitBtn.disabled = true;
+                    submitBtn.innerHTML = '<span>Signing in...</span>';
+                }
+
+                // Remove existing dynamic error banners
+                document.querySelectorAll('.login-alert-banner').forEach(function (el) { el.remove(); });
+
                 try {
-                    sessionStorage.removeItem('ps_nav_stack');
-                    sessionStorage.removeItem('ps_nav_index');
-                    sessionStorage.setItem('ps_just_logged_in', 'true');
-                    sessionStorage.setItem('ps_active_tab', 'true');
-                } catch (e) { }
+                    const formData = new FormData(loginForm);
+                    const response = await fetch(loginForm.action, {
+                        method: 'POST',
+                        body: formData,
+                        headers: {
+                            'X-Requested-With': 'XMLHttpRequest'
+                        }
+                    });
+
+                    let data = null;
+                    try {
+                        data = await response.json();
+                    } catch (parseErr) {
+                        data = null;
+                    }
+
+                    if (response.ok && data && data.ok && data.redirect) {
+                        const sessionId = 'ps360_sess_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9);
+                        try {
+                            localStorage.setItem('ps360_active_session_id', sessionId);
+                            localStorage.setItem('ps360_active_session_time', String(Date.now()));
+                            localStorage.removeItem('ps360_idle_expired_at_ms');
+                            localStorage.setItem('ps360_idle_last_activity_ms', String(Date.now()));
+                            sessionStorage.removeItem('ps360_user_signed_out');
+                            localStorage.removeItem('ps360_user_signed_out');
+                            document.cookie = "ps360_just_logged_out=; path=/; max-age=0";
+                            document.cookie = "ps360_user_signed_out=; path=/; max-age=0";
+                            sessionStorage.setItem('ps360_tab_session_id', sessionId);
+                            sessionStorage.setItem('ps_just_logged_in', 'true');
+                            sessionStorage.setItem('ps_portal_initialized', 'true');
+                            sessionStorage.setItem('ps_nav_depth', '0');
+                            sessionStorage.removeItem('ps_visited_subpage');
+                        } catch (stErr) {}
+
+                        // Broadcast to other open tabs so they auto-logout immediately
+                        if (window.BroadcastChannel) {
+                            try {
+                                const bc = new BroadcastChannel('ps360_session_channel');
+                                bc.postMessage({ type: 'NEW_LOGIN', sessionId: sessionId, timestamp: Date.now() });
+                                bc.close();
+                            } catch (bcErr) {}
+                        }
+
+                        // Navigate to dashboard
+                        window.location.href = data.redirect;
+                        return;
+                    }
+
+                    // Handle login error
+                    const errorMsg = (data && data.error) ? data.error : 'Invalid email or password. Please try again.';
+                    const alertDiv = document.createElement('div');
+                    alertDiv.className = 'login-alert-banner alert-danger';
+                    alertDiv.innerHTML = '<div style="display:flex;align-items:center;gap:9px;">' +
+                        '<i class="fa-solid fa-circle-exclamation"></i>' +
+                        '<span>' + errorMsg + '</span></div>' +
+                        '<button type="button" onclick="this.closest(\'.login-alert-banner\').remove()" ' +
+                        'style="background:none;border:none;font-size:16px;cursor:pointer;color:inherit;padding:0 4px;line-height:1;opacity:0.7;" ' +
+                        'aria-label="Close alert">&times;</button>';
+                    loginForm.parentNode.insertBefore(alertDiv, loginForm);
+
+                    if (submitBtn) {
+                        submitBtn.disabled = false;
+                        submitBtn.innerHTML = originalBtnHtml;
+                    }
+                } catch (netErr) {
+                    // Fallback to native form submission
+                    loginForm.submit();
+                }
             });
         }
 
-        // Exit button sets flags to prevent intro video on return to home
+        // Exit button reliably clears session markers and navigates to public landing page
         const exitBtn = document.getElementById('login-exit-btn');
         if (exitBtn) {
-            exitBtn.addEventListener('click', function () {
+            exitBtn.addEventListener('click', function (e) {
+                e.preventDefault();
                 try {
                     sessionStorage.setItem('ps360_clicked_home', 'true');
                     sessionStorage.setItem('ps360_logged_out', 'true');
                     sessionStorage.setItem('ps360_from_login', 'true');
-                    document.cookie = "ps360_just_logged_out=1; path=/; max-age=60; SameSite=Lax";
-                } catch (e) { }
+                    sessionStorage.removeItem('ps360_user_signed_out');
+                    sessionStorage.removeItem('ps_visited_subpage');
+                    sessionStorage.removeItem('ps360_active_subpage');
+                    sessionStorage.removeItem('ps_last_subpage_path');
+                    document.cookie = "ps360_user_signed_out=; path=/; max-age=0";
+                    document.cookie = "ps360_just_logged_out=; path=/; max-age=0";
+                } catch (err) { }
+                window.location.href = '/?logged_out=1';
             });
         }
 

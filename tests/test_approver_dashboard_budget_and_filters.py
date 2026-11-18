@@ -643,4 +643,253 @@ def test_department_prs_uses_approver_prefixed_url(client, setup_approver_env):
     assert client.get("/approver/requisitions/").status_code == 200
 
 
+@pytest.mark.django_db
+def test_approver_sees_and_approves_prs_from_departments_without_own_approver(client, setup_approver_env):
+    """
+    When an organization has departments without dedicated approvers, the organization's
+    active department approvers must see those PRs in their pending queue, inbox, and list,
+    and have full authority to approve or reject them.
+    """
+    from apps.requisitions.services import submit_purchase_requisition_service
+
+    env = setup_approver_env
+    org = env["org"]
+    approver = env["approver"]
+
+    # 1. Create a 2nd department with cost center and requester, but NO approver
+    dept2 = Department.objects.create(organization=org, name="Operations", code="OPS-02")
+    cc2 = CostCenter.objects.create(department=dept2, name="Logistics", code="CC-OPS-02")
+    Budget.objects.create(
+        cost_center=cc2,
+        fiscal_period=env["fp"],
+        allocated_amount=Decimal("100000.00"),
+    )
+    requester_role = Role.objects.get(code=Role.REQUESTER)
+    requester2 = User.objects.create_user(
+        email="requester2_ops@hpe.com",
+        password="Password123!",
+        role=requester_role,
+        department=dept2,
+        organization=org,
+    )
+
+    # Org-wide policy step for PRs
+    policy2 = ApprovalPolicy.objects.create(
+        name="Ops Policy",
+        organization=org,
+        department=dept2,
+        module=ApprovalPolicy.MODULE_PR,
+        min_amount=Decimal("0.00"),
+        max_amount=Decimal("1000000.00"),
+        is_active=True,
+    )
+    ApprovalStep.objects.create(
+        policy=policy2,
+        step_number=1,
+        approver_role=Role.objects.get(code=Role.DEPT_APPROVER),
+    )
+
+    # 2. Requester2 submits PR
+    pr2 = PurchaseRequisition.objects.create(
+        requester=requester2,
+        department=dept2,
+        cost_center=cc2,
+        title="Warehouse Tools",
+        justification="Safety tools for operations",
+        requested_delivery_date=timezone.now().date() + timezone.timedelta(days=7),
+    )
+    PRLine.objects.create(
+        requisition=pr2,
+        item_description="Pallet Jack",
+        quantity=Decimal("2.00"),
+        unit_of_measure="EA",
+        estimated_unit_price=Decimal("1500.00"),
+    )
+    pr2.total_amount = Decimal("3000.00")
+    pr2.save(update_fields=["total_amount"])
+    pr2 = submit_purchase_requisition_service(requisition=pr2, user=requester2)
+    assert pr2.status == PurchaseRequisition.STATUS_MANAGER_REVIEW
+
+    # 3. Approver (from dept1) logs in
+    client.force_login(approver)
+
+    # Check Approver Dashboard (/approver/)
+    dash_resp = client.get("/approver/")
+    assert dash_resp.status_code == 200
+    dash_html = dash_resp.content.decode("utf-8")
+    assert pr2.pr_number in dash_html
+    assert "Warehouse Tools" in dash_html
+    assert 'name="action" value="APPROVED"' in dash_html
+
+    # Check Department PRs list (/approver/department-prs/)
+    dept_prs_resp = client.get("/approver/department-prs/")
+    assert dept_prs_resp.status_code == 200
+    assert pr2.pr_number in dept_prs_resp.content.decode("utf-8")
+
+    # Check Approvals Inbox (/approvals/inbox/)
+    inbox_resp = client.get("/approvals/inbox/?status=PENDING")
+    assert inbox_resp.status_code == 200
+    assert pr2.pr_number in inbox_resp.content.decode("utf-8")
+
+    # Check PR Detail page (/requisitions/<id>/) - Approve/Reject buttons must be visible
+    detail_resp = client.get(f"/requisitions/{pr2.id}/")
+    assert detail_resp.status_code == 200
+    detail_html = detail_resp.content.decode("utf-8")
+    assert "Approve PR" in detail_html
+    assert "Reject PR" in detail_html
+
+    # 4. Approver approves the PR
+    approve_resp = client.post(
+        f"/requisitions/{pr2.id}/approve/",
+        data={"comments": "Approved on behalf of unassigned department."},
+        follow=True,
+    )
+    assert approve_resp.status_code == 200
+    pr2.refresh_from_db()
+    assert pr2.status == PurchaseRequisition.STATUS_APPROVED
+
+
+@pytest.mark.django_db
+def test_notification_symbol_not_red_when_zero_unread_notifications_even_with_pending_approvals(client, setup_approver_env):
+    """
+    Verifies that the global navbar notification bell does not display a red badge
+    for pending approvals when unread notifications are 0. Marking all notifications
+    as read clears any red badge on the notification bell.
+    """
+    from apps.notifications.models import Notification
+    env = setup_approver_env
+    approver = env["approver"]
+    client.force_login(approver)
+
+    # 1. Create a notification and mark it unread
+    notif = Notification.objects.create(
+        recipient=approver,
+        title="Test Pending Requisition Review",
+        message="You have a new requisition awaiting review.",
+        notification_type=Notification.TYPE_APPROVAL_REQUIRED,
+        is_read=False,
+    )
+
+    # Dashboard should show notification badge
+    dash_resp = client.get("/approver/")
+    assert dash_resp.status_code == 200
+    dash_html = dash_resp.content.decode("utf-8")
+    bell_part_unread = dash_html[dash_html.find('title="Notifications"'):dash_html.find('title="Notifications"') + 500]
+    assert "bg-danger" in bell_part_unread
+
+    # 2. Mark all notifications as read via the endpoint
+    mark_resp = client.post("/notifications/mark-all-read/", follow=True)
+    assert mark_resp.status_code == 200
+    assert Notification.objects.filter(recipient=approver, is_read=False).count() == 0
+
+    # 3. Return to approver dashboard: with 0 unread notifications,
+    # the notification bell MUST NOT display a red badge, even though pending PRs exist.
+    dash_resp2 = client.get("/approver/")
+    assert dash_resp2.status_code == 200
+    dash2_html = dash_resp2.content.decode("utf-8")
+    assert 'title="Notifications"' in dash2_html
+    bell_part_read = dash2_html[dash2_html.find('title="Notifications"'):dash2_html.find('title="Notifications"') + 500]
+    assert "bg-danger" not in bell_part_read
+
+
+@pytest.mark.django_db
+def test_view_overrun_prs_shows_only_budget_overrun_requisitions(client, setup_approver_env):
+    """
+    Clicking 'View Overrun PRs' on the Department Approver dashboard:
+    1. Points to /approvals/inbox/?status=BUDGET_REVIEW.
+    2. Filters the Approvals Queue to show ONLY budget overrun PRs.
+    3. Excludes normal/within-budget pending requisitions.
+    """
+    env = setup_approver_env
+    today = timezone.now().date()
+
+    # Budget has only 100 available
+    Budget.objects.create(
+        cost_center=env["cc"],
+        fiscal_period=env["fp"],
+        allocated_amount=Decimal("100.00"),
+        reserved_amount=Decimal("0.00"),
+        committed_amount=Decimal("0.00"),
+        actual_amount=Decimal("0.00"),
+    )
+
+    # Normal PR within budget (amount = 50 <= available 100)
+    normal_pr = PurchaseRequisition.objects.create(
+        requester=env["requester"],
+        department=env["dept"],
+        cost_center=env["cc"],
+        title="Normal Office Supplies",
+        status=PurchaseRequisition.STATUS_MANAGER_REVIEW,
+        pr_number="PR-NORMAL-001",
+        total_amount=Decimal("50.00"),
+        requested_delivery_date=today,
+    )
+
+    # Overrun PR that exceeds budget (amount = 500 > available 100)
+    overrun_pr = PurchaseRequisition.objects.create(
+        requester=env["requester"],
+        department=env["dept"],
+        cost_center=env["cc"],
+        title="High Value Server Cluster",
+        status=PurchaseRequisition.STATUS_MANAGER_REVIEW,
+        pr_number="PR-OVERRUN-001",
+        total_amount=Decimal("500.00"),
+        requested_delivery_date=today,
+    )
+
+    # Another explicit STATUS_BUDGET_REVIEW PR
+    budget_review_pr = PurchaseRequisition.objects.create(
+        requester=env["requester"],
+        department=env["dept"],
+        cost_center=env["cc"],
+        title="Exception Budget Hardware",
+        status=PurchaseRequisition.STATUS_BUDGET_REVIEW,
+        pr_number="PR-BUDGET-EXC-002",
+        total_amount=Decimal("150.00"),
+        requested_delivery_date=today,
+    )
+
+    client.force_login(env["approver"])
+
+    # 1. Department approver dashboard shows "View Overrun PRs" linking to /approvals/inbox/?status=BUDGET_REVIEW
+    dash_resp = client.get("/approver/")
+    assert dash_resp.status_code == 200
+    dash_html = dash_resp.content.decode("utf-8")
+    assert 'href="/approvals/inbox/?status=BUDGET_REVIEW"' in dash_html
+    assert "View Overrun PRs" in dash_html
+
+    # 2. General inbox without filter displays all pending PRs
+    inbox_all = client.get("/approvals/inbox/?status=PENDING")
+    assert inbox_all.status_code == 200
+    all_html = inbox_all.content.decode("utf-8")
+    assert "PR-NORMAL-001" in all_html
+    assert "PR-OVERRUN-001" in all_html
+    assert "PR-BUDGET-EXC-002" in all_html
+
+    # 3. Clicking "View Overrun PRs" (/approvals/inbox/?status=BUDGET_REVIEW)
+    # MUST show ONLY the overrun and budget review PRs, excluding the normal PR!
+    inbox_overrun = client.get("/approvals/inbox/?status=BUDGET_REVIEW")
+    assert inbox_overrun.status_code == 200
+    overrun_html = inbox_overrun.content.decode("utf-8")
+
+    assert inbox_overrun.context["status_filter"] == "BUDGET_REVIEW"
+    assert '<option value="BUDGET_REVIEW" selected>Budget Review</option>' in overrun_html
+
+    # Only overrun and budget review PRs present
+    assert "PR-OVERRUN-001" in overrun_html
+    assert "PR-BUDGET-EXC-002" in overrun_html
+    # Normal PR MUST NOT be present
+    assert "PR-NORMAL-001" not in overrun_html
+
+    # 4. Same behavior with ?overrun=1
+    inbox_overrun_param = client.get("/approvals/inbox/?overrun=1")
+    assert inbox_overrun_param.status_code == 200
+    param_html = inbox_overrun_param.content.decode("utf-8")
+    assert "PR-OVERRUN-001" in param_html
+    assert "PR-BUDGET-EXC-002" in param_html
+    assert "PR-NORMAL-001" not in param_html
+
+
+
+
 

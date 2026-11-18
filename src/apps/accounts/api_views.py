@@ -1,7 +1,11 @@
+import time
+
 from django.contrib.auth import authenticate, login, logout
+from django.http import JsonResponse
 from django.middleware.csrf import get_token
 from django.utils.decorators import method_decorator
-from django.views.decorators.csrf import ensure_csrf_cookie
+from django.views import View
+from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
 from drf_spectacular.utils import OpenApiExample, OpenApiResponse, extend_schema
 from rest_framework import filters, mixins, status, views, viewsets
 from rest_framework.decorators import action
@@ -193,6 +197,7 @@ class SessionLoginView(views.APIView):
             )
 
         login(request, user)
+        request.session["_last_activity_ts"] = time.time()
         csrf_token = get_token(request)
         serializer = UserSerializer(user)
 
@@ -212,7 +217,7 @@ class SessionLoginView(views.APIView):
             user_agent=request.META.get("HTTP_USER_AGENT", ""),
         )
 
-        return Response(
+        resp = Response(
             {
                 "message": "Login successful.",
                 "user": serializer.data,
@@ -220,6 +225,9 @@ class SessionLoginView(views.APIView):
             },
             status=status.HTTP_200_OK,
         )
+        resp.delete_cookie("ps360_just_logged_out")
+        resp.delete_cookie("ps360_user_signed_out")
+        return resp
 
 
 class SessionLogoutView(views.APIView):
@@ -266,6 +274,40 @@ class SessionLogoutView(views.APIView):
         return Response({"message": "Logout successful."}, status=status.HTTP_200_OK)
 
 
+@method_decorator(csrf_exempt, name="dispatch")
+class SessionExitBeaconView(View):
+    """
+    Receives beacon when user exits the web application to the browser homepage
+    via browser back navigation. Terminates the server session immediately.
+    """
+
+    def post(self, request, *args, **kwargs):
+        user = getattr(request, "user", None)
+        if user is not None and user.is_authenticated:
+            try:
+                from apps.audit.models import AuditLog
+                from apps.audit.services import create_audit_log_service
+
+                create_audit_log_service(
+                    actor=user,
+                    action=AuditLog.ACTION_LOGOUT,
+                    target_model="User",
+                    target_object_id=str(user.id),
+                    previous_state={"email": user.email},
+                    new_state={"reason": "browser_exit_to_home"},
+                    ip_address=request.META.get("REMOTE_ADDR"),
+                    user_agent=request.META.get("HTTP_USER_AGENT", ""),
+                )
+            except Exception:
+                pass
+            logout(request)
+
+        response = JsonResponse({"status": "ok", "message": "Session terminated on exit."})
+        response.set_cookie("ps360_just_logged_out", "1", max_age=120, path="/", samesite="Lax")
+        response.set_cookie("ps360_user_signed_out", "1", max_age=120, path="/", samesite="Lax")
+        return response
+
+
 class SessionRefreshView(views.APIView):
     permission_classes = [AllowAny]
 
@@ -290,6 +332,7 @@ class SessionRefreshView(views.APIView):
             user = authenticate(request, username=auth_username, password=password)
             if user and user.is_active:
                 login(request, user)
+                request.session["_last_activity_ts"] = time.time()
                 return Response(
                     {"status": "ok", "message": "Session refreshed.", "user": UserSerializer(user).data},
                     status=status.HTTP_200_OK,
@@ -298,6 +341,60 @@ class SessionRefreshView(views.APIView):
         return Response(
             {"error": {"code": "NOT_AUTHENTICATED", "message": "Authentication required to refresh session."}},
             status=status.HTTP_401_UNAUTHORIZED,
+        )
+
+
+class SessionKeepAliveView(views.APIView):
+    permission_classes = [AllowAny]
+
+    @extend_schema(
+        summary="Session Activity Keepalive",
+        description="Extends an active authenticated session when real user activity occurs in the UI.",
+        responses={
+            200: OpenApiResponse(description="Session activity timestamp refreshed."),
+            401: OpenApiResponse(description="Session expired or unauthenticated."),
+        },
+        tags=["Authentication"],
+    )
+    def get(self, request, *args, **kwargs):
+        if not request.user or not request.user.is_authenticated:
+            return Response(
+                {
+                    "error": {
+                        "code": "SESSION_EXPIRED",
+                        "message": "Your session has expired. Please sign in again.",
+                    },
+                    "redirect_url": "/login/?session_expired=1",
+                },
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+        return Response({"status": "authenticated"}, status=status.HTTP_200_OK)
+
+    def post(self, request, *args, **kwargs):
+        if not request.user or not request.user.is_authenticated:
+            return Response(
+                {
+                    "error": {
+                        "code": "SESSION_EXPIRED",
+                        "message": "Your session has expired. Please sign in again.",
+                    },
+                    "redirect_url": "/login/?session_expired=1",
+                },
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        from django.conf import settings as django_settings
+
+        timeout_seconds = int(getattr(django_settings, "SESSION_IDLE_TIMEOUT_SECONDS", 300))
+        now = time.time()
+        request.session["_last_activity_ts"] = now
+        return Response(
+            {
+                "status": "ok",
+                "timeout_seconds": timeout_seconds,
+                "expires_at": int(now + timeout_seconds),
+            },
+            status=status.HTTP_200_OK,
         )
 
 
@@ -330,9 +427,9 @@ class UserViewSet(viewsets.ModelViewSet):
         role_code = getattr(user, "role_code", None) or (
             user.role.code if getattr(user, "role", None) else None
         )
-        if user.is_superuser or role_code in [Role.SUPER_ADMIN, Role.AUDITOR]:
-            return get_all_users()
-        return User.objects.filter(id=user.id)
+        if user.is_superuser or role_code == Role.SUPER_ADMIN:
+            return get_all_users().order_by("email", "id")
+        return User.objects.filter(id=user.id).order_by("id")
 
     def perform_create(self, serializer):
         user = serializer.save()

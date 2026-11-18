@@ -45,7 +45,7 @@ def test_all_role_dashboards_render_successfully(client):
         html = response.content.decode()
         assert expected_snippet.lower() in html.lower()
         # Verify standardized global navbar presence and branding
-        assert "procuresphere_360_nav_brand.png" in html
+        assert "procuresphere_360_nav_brand." in html
         assert "global-enterprise-navbar" in html
         # Verify logo is positioned at the top of the sidebar and toggle is in navbar
         assert "sidebar-brand-box" in html

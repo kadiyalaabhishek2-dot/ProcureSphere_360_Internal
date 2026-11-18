@@ -33,12 +33,15 @@ class CanManageApprovalPolicy(BasePermission):
         role_code = getattr(request.user, "role_code", None) or (
             request.user.role.code if getattr(request.user, "role", None) else None
         )
-        if not request.user.is_superuser and role_code in [Role.STORES_RECEIVER, Role.LEGAL_MGR, Role.REQUESTER]:
-            return False
-
         if request.method in SAFE_METHODS:
+            if not request.user.is_superuser and role_code in [Role.STORES_RECEIVER, Role.LEGAL_MGR]:
+                return False
             return True
-        return request.user.is_superuser or request.user.role_code == Role.SUPER_ADMIN
+
+        return (
+            request.user.is_superuser
+            or role_code in [Role.SUPER_ADMIN, Role.PROC_MGR]
+        )
 
 
 class ApprovalPolicySerializer(serializers.ModelSerializer):
@@ -82,21 +85,11 @@ class ApprovalActionFilter(django_filters.FilterSet):
     target_model = django_filters.CharFilter(
         field_name="target_model_name", lookup_expr="icontains"
     )
-    target_object_id = django_filters.CharFilter(method="filter_target_object_id")
+    target_object_id = django_filters.UUIDFilter(field_name="target_object_id")
 
     class Meta:
         model = ApprovalAction
         fields = ["status", "action", "target_model_name", "target_object_id"]
-
-    def filter_target_object_id(self, queryset, name, value):
-        if not value:
-            return queryset
-        import uuid
-        try:
-            val_uuid = uuid.UUID(str(value).strip())
-            return queryset.filter(target_object_id=val_uuid)
-        except (ValueError, AttributeError):
-            return queryset.none()
 
 
 class ApprovalPolicyViewSet(viewsets.ModelViewSet):
@@ -104,7 +97,8 @@ class ApprovalPolicyViewSet(viewsets.ModelViewSet):
     serializer_class = ApprovalPolicySerializer
     permission_classes = [IsAuthenticated, CanManageApprovalPolicy]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    search_fields = ["name", "module"]
+    search_fields = ["name", "module", "description", "currency"]
+    filterset_fields = ["module", "status", "organization", "department", "currency"]
     ordering_fields = ["name", "min_amount", "created_at"]
 
 
@@ -116,6 +110,23 @@ class ApprovalStepSerializer(serializers.ModelSerializer):
         model = ApprovalStep
         fields = "__all__"
 
+    def validate(self, attrs):
+        policy = attrs.get("policy") or (self.instance.policy if self.instance else None)
+        step_number = (
+            attrs.get("step_number")
+            if "step_number" in attrs
+            else (self.instance.step_number if self.instance else None)
+        )
+        if policy and step_number is not None:
+            qs = ApprovalStep.objects.filter(policy=policy, step_number=step_number)
+            if self.instance:
+                qs = qs.exclude(pk=self.instance.pk)
+            if qs.exists():
+                raise serializers.ValidationError(
+                    {"step_number": [f"Step number {step_number} already exists for this policy."]}
+                )
+        return attrs
+
 
 class ApprovalStepViewSet(viewsets.ModelViewSet):
     queryset = ApprovalStep.objects.select_related("policy", "approver_role", "specific_approver").all()
@@ -124,6 +135,24 @@ class ApprovalStepViewSet(viewsets.ModelViewSet):
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
     filterset_fields = ["policy", "approver_role", "step_number"]
     ordering_fields = ["step_number", "created_at"]
+
+    def create(self, request, *args, **kwargs):
+        from django.db import IntegrityError
+        try:
+            return super().create(request, *args, **kwargs)
+        except IntegrityError:
+            return Response(
+                {
+                    "error": {
+                        "code": "VALIDATION_ERROR",
+                        "message": "Validation failed for one or more fields.",
+                        "details": {
+                            "step_number": ["Duplicate step number within the same policy."]
+                        },
+                    }
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
 
 class ApprovalActionViewSet(viewsets.ReadOnlyModelViewSet):
@@ -140,18 +169,40 @@ class ApprovalActionViewSet(viewsets.ReadOnlyModelViewSet):
         qs = super().get_queryset()
         if not user or not user.is_authenticated:
             return qs.none()
-        if user.is_superuser:
-            return qs
 
+        import uuid
         from django.db.models import Q
-        user_org = getattr(user, "effective_organization", None) or getattr(user, "organization", None)
-        if not user_org:
-            return qs.filter(actor=user)
 
-        return qs.filter(
-            Q(actor__organization=user_org)
-            | Q(policy_step__policy__organization=user_org)
-        )
+        # 1. Multi-tenant & organization isolation for non-superusers
+        if not user.is_superuser:
+            user_org = getattr(user, "effective_organization", None) or getattr(user, "organization", None)
+            if not user_org:
+                qs = qs.filter(actor=user)
+            else:
+                qs = qs.filter(
+                    Q(actor__organization=user_org)
+                    | Q(actor__department__organization=user_org)
+                    | Q(policy_step__policy__organization=user_org)
+                    | Q(policy_step__policy__department__organization=user_org)
+                    | Q(actor=user)
+                )
+
+        # 2. Database queryset-level filtering for target_object_id
+        target_obj_id = self.request.query_params.get("target_object_id")
+        if target_obj_id:
+            raw_id = str(target_obj_id).strip()
+            try:
+                val_uuid = uuid.UUID(raw_id)
+                qs = qs.filter(target_object_id=val_uuid)
+            except (ValueError, AttributeError):
+                return qs.none()
+
+        # 3. Optional target_model filtering if provided
+        target_model = self.request.query_params.get("target_model") or self.request.query_params.get("target_model_name")
+        if target_model:
+            qs = qs.filter(target_model_name__icontains=str(target_model).strip())
+
+        return qs
 
     def _check_approver_authorization(self, request):
         user = request.user

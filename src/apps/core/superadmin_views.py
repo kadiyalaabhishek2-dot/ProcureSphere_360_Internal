@@ -672,47 +672,44 @@ def user_resend_welcome_email_view(request, user_id):
 
 
 @login_required
-
 def cost_center_options_view(request):
-
     if not _is_super_admin(request.user):
-
         return HttpResponse("<option value=''>-- Unauthorized --</option>", status=403)
-
     dept_id = request.GET.get("department", "").strip()
-
+    user_id = request.GET.get("user_id", "").strip()
     cost_centers = CostCenter.objects.none()
-
     if dept_id:
-
         try:
-
             import uuid
-
             uuid.UUID(dept_id)
-
             cost_centers = CostCenter.objects.filter(department_id=dept_id)
-
             scoped_org = get_user_scoped_org(request.user)
-
             if scoped_org:
-
                 cost_centers = cost_centers.filter(department__organization=scoped_org)
 
+            # Exclude cost centers already assigned to active Requesters so they cannot be double-assigned
+            from apps.accounts.models import Role, User
+            assigned_req_cc_ids = User.objects.filter(
+                role__code=Role.REQUESTER,
+                is_active=True,
+                cost_center__isnull=False,
+            )
+            if user_id:
+                try:
+                    assigned_req_cc_ids = assigned_req_cc_ids.exclude(pk=user_id)
+                except (ValueError, TypeError):
+                    pass
+            assigned_cc_id_set = set(assigned_req_cc_ids.values_list("cost_center_id", flat=True))
+            if assigned_cc_id_set:
+                cost_centers = cost_centers.exclude(id__in=assigned_cc_id_set)
+
             cost_centers = cost_centers.order_by("name")
-
         except (ValueError, AttributeError):
-
             pass
-
     return render(
-
         request,
-
         "pages/dashboards/superadmin/cost_center_options.html",
-
         {"cost_centers": cost_centers},
-
     )
 
 
@@ -989,12 +986,24 @@ def org_edit_view(request, org_id):
     if request.method == "POST":
 
         prior_admin_user = org.admin_user
+        prior_active = org.is_active
 
         form = OrganizationAdminForm(request.POST, instance=org)
 
         if form.is_valid():
 
             org = form.save()
+
+            if prior_active != org.is_active:
+                if org.admin_user and org.admin_user.organization_id == org.id:
+                    org.admin_user.is_active = org.is_active
+                    org.admin_user.save(update_fields=["is_active"])
+                if org.procurement_manager and org.procurement_manager.organization_id == org.id:
+                    org.procurement_manager.is_active = org.is_active
+                    org.procurement_manager.save(update_fields=["is_active"])
+                if org.compliance_auditor and org.compliance_auditor.organization_id == org.id:
+                    org.compliance_auditor.is_active = org.is_active
+                    org.compliance_auditor.save(update_fields=["is_active"])
 
             admin_email = form.cleaned_data.get("admin_email")
 
@@ -3041,6 +3050,9 @@ def policy_create_view(request):
     if scoped_org:
         user_qs = user_qs.filter(Q(organization=scoped_org) | Q(department__organization=scoped_org))
 
+    submitted_steps = request.POST.get("steps_data") if request.method == "POST" else None
+    steps_json = submitted_steps if submitted_steps else json.dumps(initial_steps)
+
     return render(
         request,
         "pages/dashboards/superadmin/policy_form.html",
@@ -3048,7 +3060,7 @@ def policy_create_view(request):
             "form": form,
             "is_edit": False,
             "policy": None,
-            "steps_json": json.dumps(initial_steps),
+            "steps_json": steps_json,
             "available_roles": available_roles,
             "available_users": user_qs,
         },
@@ -3121,6 +3133,9 @@ def policy_edit_view(request, policy_id):
     if scoped_org:
         user_qs = user_qs.filter(Q(organization=scoped_org) | Q(department__organization=scoped_org))
 
+    submitted_steps = request.POST.get("steps_data") if request.method == "POST" else None
+    steps_json = submitted_steps if submitted_steps else json.dumps(steps_list)
+
     return render(
         request,
         "pages/dashboards/superadmin/policy_form.html",
@@ -3128,7 +3143,7 @@ def policy_edit_view(request, policy_id):
             "form": form,
             "is_edit": True,
             "policy": policy,
-            "steps_json": json.dumps(steps_list),
+            "steps_json": steps_json,
             "available_roles": available_roles,
             "available_users": user_qs,
         },
@@ -3699,10 +3714,114 @@ def location_delete_view(request, location_id):
         )
 
         loc.delete()
-
         messages.success(request, f"Location '{loc_name}' ({loc_code}) has been deleted.")
-
     return redirect(request.META.get("HTTP_REFERER", "/superadmin/locations/"))
+
+
+@super_admin_required
+def dept_delete_view(request, dept_id):
+    scoped_org = get_user_scoped_org(request.user)
+    if scoped_org:
+        dept = get_object_or_404(Department, pk=dept_id, organization=scoped_org)
+    else:
+        dept = get_object_or_404(Department, pk=dept_id)
+
+    if request.method == "POST":
+        dept_name = dept.name
+        dept_code = dept.code
+        dept_id_str = str(dept.id)
+        from django.db.models import ProtectedError
+
+        from apps.audit.services import create_audit_log_service
+        try:
+            create_audit_log_service(
+                actor=request.user,
+                action=AuditLog.ACTION_DELETE,
+                target_model="Department",
+                target_object_id=dept_id_str,
+                previous_state={"name": dept_name, "code": dept_code},
+                new_state=None,
+                ip_address=request.META.get("REMOTE_ADDR"),
+                user_agent=request.META.get("HTTP_USER_AGENT", ""),
+            )
+            dept.delete()
+            messages.success(request, f"Department '{dept_name}' ({dept_code}) has been deleted successfully.")
+        except ProtectedError:
+            messages.error(request, f"Cannot delete Department '{dept_name}' ({dept_code}) because active users, cost centers, or requisitions are linked to it.")
+    return redirect(request.META.get("HTTP_REFERER", "/superadmin/organizations/"))
+
+
+@super_admin_required
+def cost_center_delete_view(request, cc_id):
+    scoped_org = get_user_scoped_org(request.user)
+    if scoped_org:
+        cc = get_object_or_404(CostCenter, pk=cc_id, department__organization=scoped_org)
+    else:
+        cc = get_object_or_404(CostCenter, pk=cc_id)
+
+    if request.method == "POST":
+        cc_name = cc.name
+        cc_code = cc.code
+        cc_id_str = str(cc.id)
+        from django.db.models import ProtectedError
+
+        from apps.audit.services import create_audit_log_service
+        try:
+            create_audit_log_service(
+                actor=request.user,
+                action=AuditLog.ACTION_DELETE,
+                target_model="CostCenter",
+                target_object_id=cc_id_str,
+                previous_state={"name": cc_name, "code": cc_code},
+                new_state=None,
+                ip_address=request.META.get("REMOTE_ADDR"),
+                user_agent=request.META.get("HTTP_USER_AGENT", ""),
+            )
+            cc.delete()
+            messages.success(request, f"Cost Center '{cc_name}' ({cc_code}) has been deleted successfully.")
+        except ProtectedError:
+            messages.error(request, f"Cannot delete Cost Center '{cc_name}' ({cc_code}) because active budgets, users, or requisitions are linked to it.")
+    return redirect(request.META.get("HTTP_REFERER", "/superadmin/organizations/"))
+
+
+@super_admin_required
+def user_delete_view(request, user_id):
+    target_user = get_object_or_404(User, pk=user_id)
+    if request.user.pk == target_user.pk:
+        messages.error(request, "You cannot delete your own account.")
+        return redirect(request.META.get("HTTP_REFERER", "/superadmin/users/"))
+
+    scoped_org = get_user_scoped_org(request.user)
+    if scoped_org:
+        user_org_id = target_user.organization_id or (target_user.department.organization_id if target_user.department else None)
+        if user_org_id != scoped_org.id:
+            messages.error(request, "Permission Denied: User belongs to another organization.")
+            return redirect(request.META.get("HTTP_REFERER", "/superadmin/users/"))
+
+    if request.method == "POST":
+        user_email = target_user.email
+        user_id_str = str(target_user.id)
+        from django.db.models import ProtectedError
+
+        from apps.audit.services import create_audit_log_service
+        try:
+            create_audit_log_service(
+                actor=request.user,
+                action=AuditLog.ACTION_DELETE,
+                target_model="User",
+                target_object_id=user_id_str,
+                previous_state={"email": user_email},
+                new_state=None,
+                ip_address=request.META.get("REMOTE_ADDR"),
+                user_agent=request.META.get("HTTP_USER_AGENT", ""),
+            )
+            target_user.delete()
+            messages.success(request, f"User '{user_email}' has been deleted successfully.")
+        except ProtectedError:
+            target_user.is_active = False
+            target_user.save(update_fields=["is_active"])
+            messages.warning(request, f"User '{user_email}' has linked transaction history and cannot be hard deleted. The account has been deactivated instead.")
+    return redirect(request.META.get("HTTP_REFERER", "/superadmin/users/"))
 
 
 
