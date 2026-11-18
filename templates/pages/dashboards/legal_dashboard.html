@@ -590,7 +590,7 @@
                                 <tr>
                                     <td class="ps-3">
                                         <a href="{% url 'contract_detail' contract_id=contract.id %}" class="fw-bold text-primary text-decoration-none">
-                                            <code>{{ contract.contract_number }}</code>
+                                            <span class="font-monospace text-navy">{{ contract.contract_number }}</span>
                                         </a>
                                         <div class="text-muted small fw-semibold text-truncate" style="max-width: 280px;" title="{{ contract.title }}">{{ contract.title }}</div>
                                     </td>
@@ -715,7 +715,7 @@
                                 {% for contract in expiring_contracts_list %}
                                 <tr>
                                     <td class="ps-3">
-                                        <code>{{ contract.contract_number }}</code>
+                                        <span class="font-monospace text-navy">{{ contract.contract_number }}</span>
                                         <div class="text-muted small text-truncate" style="max-width: 220px;" title="{{ contract.title }}">{{ contract.title }}</div>
                                     </td>
                                     <td class="small fw-semibold text-dark text-truncate" style="max-width: 180px;" title="{{ contract.vendor.legal_name }}">{{ contract.vendor.legal_name }}</td>
@@ -792,7 +792,7 @@
                                         <div class="flex-grow-1 overflow-hidden">
                                             <div class="fw-bold text-dark small text-truncate" title="{{ ob.title }}">{{ ob.title }}</div>
                                             <div class="text-muted d-flex flex-wrap align-items-center gap-1 mt-1" style="font-size: 0.75rem;">
-                                                <code>{{ ob.contract.contract_number }}</code> &bull; Due:
+                                                <span class="font-monospace text-navy">{{ ob.contract.contract_number }}</span> &bull; Due:
                                                 {% if ob.due_status == 'OVERDUE' %}
                                                     <span class="badge bg-danger bg-opacity-10 text-danger border border-danger border-opacity-25 rounded-pill px-2 py-0 fw-bold" style="font-size:0.68rem;">OVERDUE</span>
                                                     <span class="text-danger fw-bold">{{ ob.due_date|date:"M d, Y" }}</span>
@@ -830,7 +830,7 @@
                                         <div class="flex-grow-1 overflow-hidden">
                                             <div class="fw-bold text-dark small text-truncate" title="{{ ms.title }}">{{ ms.title }}</div>
                                             <div class="text-muted d-flex flex-wrap align-items-center gap-1 mt-1" style="font-size: 0.75rem;">
-                                                <code>{{ ms.contract.contract_number }}</code> &bull; Target:
+                                                <span class="font-monospace text-navy">{{ ms.contract.contract_number }}</span> &bull; Target:
                                                 {% if ms.due_status == 'OVERDUE' %}
                                                     <span class="badge bg-danger bg-opacity-10 text-danger border border-danger border-opacity-25 rounded-pill px-2 py-0 fw-bold" style="font-size:0.68rem;">OVERDUE</span>
                                                     <span class="text-danger fw-bold">{{ ms.due_date|date:"M d, Y" }}</span>
