@@ -250,17 +250,17 @@
                     <span class="badge bg-secondary-subtle text-secondary-emphasis border border-secondary-subtle fw-semibold px-2.5 py-1 rounded-pill" style="font-size: 0.75rem; letter-spacing: 0.02em;">
                         <i class="fa-solid fa-eye me-1 text-primary"></i> PR OVERSIGHT QUEUE
                     </span>
-                    <span class="text-muted small">Active requisitions under review across departments for manager governance and operational oversight</span>
                 </div>
                 <h5 class="fw-bold text-dark mb-0 font-heading">Purchase Requisitions Under Oversight</h5>
+                <p class="text-muted small mb-0">Active requisitions under review across departments for manager governance and operational oversight</p>
             </div>
             <a href="/manager/approvals/" class="btn btn-sm btn-outline-primary rounded-pill px-3 fw-bold">
                 Full Oversight Desk <i class="fa-solid fa-arrow-right ms-1"></i>
             </a>
         </div>
 
-        <div class="table-responsive border rounded-3 overflow-hidden">
-            <table class="table table-hover align-middle mb-0">
+        <div class="table-responsive border rounded-3" style="overflow-x: auto;">
+            <table class="table table-hover align-middle mb-0" style="min-width: 950px;">
                 <thead class="table-light small text-uppercase">
                     <tr>
                         <th class="ps-3">PR Number</th>
@@ -268,7 +268,7 @@
                         <th>Department / Requester</th>
                         <th class="text-end">Amount</th>
                         <th>Status</th>
-                        <th class="pe-3 text-end">Action</th>
+                        <th class="pe-3 text-end text-nowrap" style="min-width: 180px;">ACTIONS</th>
                     </tr>
                 </thead>
                 <tbody id="dashPrApprovalsBody">
@@ -291,9 +291,9 @@
                     <span class="badge bg-secondary-subtle text-secondary-emphasis border border-secondary-subtle fw-semibold px-2.5 py-1 rounded-pill" style="font-size: 0.75rem;">
                         <i class="fa-solid fa-shield-halved me-1 text-secondary"></i> Supplier Governance
                     </span>
-                    <span class="text-muted small">Sanctions enforcement, suspension status, and exposure monitoring</span>
                 </div>
                 <h5 class="fw-bold text-dark mb-0 font-heading">Supplier Governance &amp; Sanctions Watchlist</h5>
+                <p class="text-muted small mb-0">Sanctions enforcement, suspension status, and exposure monitoring</p>
             </div>
             <div class="d-flex gap-2">
                 <a href="/manager/vendor-risk/?tab=suspension" class="btn btn-sm btn-outline-primary rounded-pill px-3 fw-semibold">
@@ -306,7 +306,7 @@
         </div>
 
         <div class="table-responsive border rounded-3" style="overflow-x: auto;">
-            <table class="table table-hover align-middle mb-0">
+            <table class="table table-hover align-middle mb-0" style="min-width: 1050px;">
                 <thead class="table-light small text-uppercase">
                     <tr>
                         <th class="ps-3">Supplier</th>
@@ -314,7 +314,7 @@
                         <th>Risk Level</th>
                         <th>Latest Governance Note</th>
                         <th>Active Exposure</th>
-                        <th class="pe-3 text-end text-nowrap">Action</th>
+                        <th class="pe-4 text-end text-nowrap" style="min-width: 200px;">ACTIONS</th>
                     </tr>
                 </thead>
                 <tbody id="dashWatchlistBody">
@@ -387,14 +387,14 @@
                             ${it.is_out_of_budget ? 'Budget Review' : escapeDashHtml(it.status_display)}
                         </span>
                     </td>
-                    <td class="pe-3 text-end">
-                        <div class="d-inline-flex gap-1 align-items-center justify-content-end">
+                    <td class="pe-3 text-end text-nowrap" style="min-width: 180px;">
+                        <div class="d-inline-flex gap-1 align-items-center justify-content-end text-nowrap">
                             ${it.is_out_of_budget ? `
-                                <a href="/manager/approvals/?tab=pending&search=${encodeURIComponent(it.reference_number)}" class="btn btn-sm btn-outline-danger rounded-pill px-3 fw-semibold" title="Inspect & Reject Out-of-Budget PR">
+                                <a href="/manager/approvals/?tab=pending&search=${encodeURIComponent(it.reference_number)}" class="btn btn-sm btn-outline-danger rounded-pill px-3 fw-semibold text-nowrap" title="Inspect & Reject Out-of-Budget PR">
                                     <i class="fa-solid fa-xmark me-1"></i> Reject
                                 </a>
                             ` : ''}
-                            <a href="${escapeDashHtml(it.detail_url)}" class="btn btn-sm btn-outline-primary rounded-pill px-3 fw-semibold" title="Inspect Requisition">
+                            <a href="${escapeDashHtml(it.detail_url)}" class="btn btn-sm btn-outline-primary rounded-pill px-3 fw-semibold text-nowrap" title="Inspect Requisition">
                                 <i class="fa-solid fa-eye me-1"></i> View
                             </a>
                         </div>
@@ -550,11 +550,11 @@
                                 </span>
                             </div>
                         </td>
-                        <td class="pe-3 text-end">
-                            <div class="d-inline-flex gap-1 align-items-center">
+                        <td class="pe-4 text-end text-nowrap" style="min-width: 200px;">
+                            <div class="d-inline-flex gap-1 align-items-center justify-content-end text-nowrap">
                                 ${actionBtn}
-                                <a href="/vendors/${v.id}/" class="btn btn-sm btn-outline-secondary rounded-pill px-2 py-1" title="Open Vendor File">
-                                    <i class="fa-solid fa-arrow-up-right-from-square"></i>
+                                <a href="/vendors/${v.id}/" class="btn btn-sm btn-outline-secondary rounded-pill px-3 py-1 text-nowrap" title="Open Vendor File">
+                                    <i class="fa-solid fa-arrow-up-right-from-square me-1"></i> View
                                 </a>
                             </div>
                         </td>

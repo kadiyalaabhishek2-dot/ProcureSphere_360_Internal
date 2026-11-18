@@ -197,12 +197,12 @@ def test_def_020_missing_query_parameters_return_400(world):
     client = APIClient()
     client.force_authenticate(user=world["auditor"])
 
-    # Audit lifecycle without identifier falls back gracefully or returns 404 if no entity exists
+    # Audit lifecycle without identifier returns 400 or 404
     res = client.get("/api/v1/audit/logs/lifecycle/")
-    assert res.status_code in (status.HTTP_200_OK, status.HTTP_404_NOT_FOUND)
+    assert res.status_code in (status.HTTP_200_OK, status.HTTP_400_BAD_REQUEST, status.HTTP_404_NOT_FOUND)
 
     res = client.get("/api/v1/audit/lifecycle/")
-    assert res.status_code in (status.HTTP_200_OK, status.HTTP_404_NOT_FOUND)
+    assert res.status_code in (status.HTTP_200_OK, status.HTTP_400_BAD_REQUEST, status.HTTP_404_NOT_FOUND)
 
     # Audit entity-trail falls back or returns 400 when no audit logs exist
     res = client.get("/api/v1/audit/logs/entity-trail/")

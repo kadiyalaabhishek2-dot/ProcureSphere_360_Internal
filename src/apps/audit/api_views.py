@@ -47,12 +47,24 @@ class AuditLogPagination(LimitOffsetPagination):
 
     def paginate_queryset(self, queryset, request, view=None):
         self.request = request
+        paginate_param = request.query_params.get("paginate", "").lower()
+        pagination_param = request.query_params.get("pagination", "").lower()
+        dropdown_param = request.query_params.get("dropdown", "").lower()
+        page_size_param_raw = request.query_params.get("page_size", "").lower()
+        if (
+            paginate_param in ("false", "0", "no")
+            or pagination_param in ("none", "false", "0", "no")
+            or dropdown_param in ("true", "1", "yes")
+            or page_size_param_raw in ("all", "0", "-1")
+        ):
+            return None
+
         page_param = request.query_params.get("page")
         page_size_param = request.query_params.get("page_size") or request.query_params.get("limit")
 
         if page_size_param is not None:
             try:
-                self.limit = max(1, min(int(page_size_param), self.max_limit))
+                self.limit = max(1, min(int(page_size_param), 1000))
             except (ValueError, TypeError):
                 self.limit = self.default_limit
         else:

@@ -194,7 +194,10 @@ class PurchaseRequisitionSerializer(serializers.ModelSerializer):
                     )
 
         # Organization / Tenant isolation check
-        if request and request.user and request.user.is_authenticated and not request.user.is_superuser:
+        user_role = getattr(request.user, "role_code", None) or (
+            request.user.role.code if getattr(request.user, "role", None) else None
+        ) if request and request.user else None
+        if request and request.user and request.user.is_authenticated and not (request.user.is_superuser or user_role == Role.SUPER_ADMIN):
             user_org = getattr(request.user, "organization", None) or getattr(request.user, "effective_organization", None)
             if user_org:
                 if getattr(department, "organization_id", None) and department.organization_id != user_org.id:
@@ -395,7 +398,7 @@ class CanCreateRequisitionPermission(permissions.BasePermission):
 
         if not request.user.is_superuser and (
             getattr(request.user, "is_vendor", False)
-            or role_code in [Role.VENDOR_USER]
+            or role_code in [Role.VENDOR_USER, Role.STORES_RECEIVER, Role.LEGAL_MGR]
         ):
             return False
 
@@ -406,6 +409,7 @@ class CanCreateRequisitionPermission(permissions.BasePermission):
             if action in ["approve", "reject"]:
                 return role_code in [
                     Role.DEPT_APPROVER,
+                    Role.PROC_MGR,
                     Role.FINANCE_AP,
                     Role.SUPER_ADMIN,
                 ]
@@ -726,7 +730,12 @@ class PurchaseRequisitionViewSet(viewsets.ModelViewSet):
                 raise permissions.exceptions.PermissionDenied(
                     "You do not have permission to reject Purchase Requisitions."
                 )
-        comments = (request.data.get("comments") or request.data.get("reason") or "").strip()
+        comments = (
+            request.data.get("comments")
+            or request.data.get("reason")
+            or request.data.get("rejection_reason")
+            or ""
+        ).strip()
         if not comments:
             raise serializers.ValidationError(
                 {"comments": "Rejection comments/justification are mandatory."}

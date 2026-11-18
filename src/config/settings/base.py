@@ -173,6 +173,8 @@ MIDDLEWARE = [
 
     "whitenoise.middleware.WhiteNoiseMiddleware",
 
+    "django.middleware.gzip.GZipMiddleware",
+
     "corsheaders.middleware.CorsMiddleware",
 
     "django.contrib.sessions.middleware.SessionMiddleware",
@@ -404,7 +406,7 @@ REST_FRAMEWORK = {
 
     ),
 
-    "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
+    "DEFAULT_PAGINATION_CLASS": "apps.core.pagination.StandardResultsSetPagination",
 
     "PAGE_SIZE": 25,
 

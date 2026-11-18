@@ -510,7 +510,10 @@ def vendor_status_change_view(request, vendor_id):
                 new_status=new_status,
                 notes=notes,
             )
-        messages.success(request, f"Vendor status is now {vendor.get_status_display()}.")
+        if new_status == Vendor.STATUS_SUSPENDED:
+            messages.success(request, "Vendor is suspended.")
+        else:
+            messages.success(request, f"Vendor status is now {vendor.get_status_display()}.")
     except ValidationError as exc:
         messages.error(request, " ".join(exc.messages))
     return _redirect_detail(vendor, "governance", section=section)

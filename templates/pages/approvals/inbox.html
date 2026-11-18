@@ -50,14 +50,29 @@
 {% endif %}
 
 {% if active_tab != 'history' and has_budget_overrun %}
-<div class="alert alert-danger border border-danger shadow-sm rounded-4 mb-4 p-3 d-flex align-items-center gap-3">
-    <div class="bg-danger text-white rounded-circle d-flex align-items-center justify-content-center p-2 fs-4 flex-shrink-0" style="width: 44px; height: 44px;">
-        <i class="fa-solid fa-triangle-exclamation"></i>
+<div class="alert alert-danger border border-danger shadow-sm rounded-4 mb-4 p-3 d-flex flex-column flex-md-row align-items-start align-items-md-center justify-content-between gap-3">
+    <div class="d-flex align-items-center gap-3">
+        <div class="bg-danger text-white rounded-circle d-flex align-items-center justify-content-center p-2 fs-4 flex-shrink-0" style="width: 44px; height: 44px;">
+            <i class="fa-solid fa-triangle-exclamation"></i>
+        </div>
+        <div>
+            <h6 class="fw-bold text-danger mb-0">Budget Alert: Over-Budget Requisitions In Pending Queue</h6>
+            <p class="mb-0 text-muted small">One or more requisitions in your approval queue exceed their cost center budget allocation and require budget exception review.</p>
+        </div>
     </div>
-    <div class="flex-grow-1">
-        <h6 class="fw-bold text-danger mb-0">Budget Alert: Over-Budget Requisitions In Pending Queue</h6>
-        <p class="mb-0 text-muted small">One or more requisitions in your approval queue exceed their cost center budget allocation and require budget exception review.</p>
+    {% if status_filter != 'BUDGET_REVIEW' %}
+    <div class="flex-shrink-0 ms-auto ms-md-0">
+        <a href="/approvals/inbox/?status=BUDGET_REVIEW" class="btn btn-sm btn-danger text-white rounded-pill px-3 py-1.5 fw-semibold shadow-sm text-nowrap d-inline-flex align-items-center">
+            <i class="fa-solid fa-eye me-1.5"></i> View Overrun PRs
+        </a>
     </div>
+    {% else %}
+    <div class="flex-shrink-0 ms-auto ms-md-0">
+        <a href="/approvals/inbox/?status=PENDING" class="btn btn-sm btn-outline-danger rounded-pill px-3 py-1.5 fw-semibold shadow-sm text-nowrap d-inline-flex align-items-center">
+            <i class="fa-solid fa-list me-1.5"></i> Show All Pending
+        </a>
+    </div>
+    {% endif %}
 </div>
 {% endif %}
 
@@ -68,13 +83,13 @@
             {% if active_tab == 'history' %}
                 <input type="hidden" name="tab" value="history">
             {% endif %}
-            <div class="col-12 col-md-6 col-lg-7">
+            <div class="col-12 col-md-5 col-lg-5">
                 <div class="input-group">
                     <span class="input-group-text bg-white border-end-0 text-muted"><i class="fa-solid fa-search"></i></span>
                     <input type="text" name="q" class="form-control border-start-0 ps-0" placeholder="{% if is_legal_inbox %}Search by contract #, title, or vendor...{% else %}Search by PR #, title, requester email...{% endif %}" value="{{ search_q|default:'' }}">
                 </div>
             </div>
-            <div class="col-12 col-sm-8 col-md-4 col-lg-3">
+            <div class="col-12 col-sm-6 col-md-4 col-lg-4">
                 <select name="status" class="form-select text-secondary fw-medium" style="background-image: url(&quot;data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%23475569' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='m2 5 6 6 6-6'/%3e%3c/svg%3e&quot;) !important; background-repeat: no-repeat !important; background-position: right 0.85rem center !important; background-size: 16px 12px !important; padding-right: 2.25rem !important;">
                     <option value="">-- All Statuses --</option>
                     {% if is_legal_inbox %}
@@ -107,10 +122,10 @@
                     {% endif %}
                 </select>
             </div>
-            <div class="col-12 col-sm-4 col-md-2 col-lg-2 d-flex gap-2">
-                <button type="submit" class="btn btn-primary w-100 rounded-3 text-nowrap"><i class="fa-solid fa-filter me-1"></i> Filter</button>
+            <div class="col-12 col-sm-6 col-md-3 col-lg-3 d-flex gap-2">
+                <button type="submit" class="btn btn-primary rounded-3 text-nowrap flex-grow-1"><i class="fa-solid fa-filter me-1"></i> Filter</button>
                 {% if search_q or status_filter %}
-                    <a href="{% if active_tab == 'history' %}?tab=history{% else %}/approvals/inbox/{% endif %}" class="btn btn-outline-secondary rounded-3 text-nowrap d-inline-flex align-items-center" title="Clear Filters">
+                    <a href="{% if active_tab == 'history' %}?tab=history{% else %}/approvals/inbox/{% endif %}" class="btn btn-outline-secondary rounded-3 text-nowrap d-inline-flex align-items-center px-3" title="Clear Filters">
                         <i class="fa-solid fa-xmark me-1"></i> Reset
                     </a>
                 {% endif %}
@@ -342,7 +357,7 @@
                         </div>
                         <div class="text-end flex-shrink-0">
                             <div class="fw-bold text-navy fs-6">₹{{ pr.total_amount|floatformat:2 }}</div>
-                            {% if pr.status == 'BUDGET_REVIEW' %}
+                            {% if pr.status == 'BUDGET_REVIEW' or pr.is_over_budget %}
                                 <span class="badge bg-danger text-white rounded-pill px-2 py-0.5" style="font-size: 0.65rem;">Budget Review</span>
                             {% else %}
                                 <span class="badge bg-warning text-dark rounded-pill px-2 py-0.5" style="font-size: 0.65rem;">{{ pr.get_status_display }}</span>
@@ -443,14 +458,14 @@
                             <td><span class="small text-dark fw-semibold text-truncate d-inline-block" style="max-width: 160px;">{{ pr.requester.email }}</span></td>
                             <td class="text-end fw-bold text-navy text-nowrap">
                                 ₹{{ pr.total_amount|floatformat:2 }}
-                                {% if pr.status == 'BUDGET_REVIEW' %}
+                                {% if pr.status == 'BUDGET_REVIEW' or pr.is_over_budget %}
                                 <span class="badge bg-danger-subtle text-danger border border-danger-subtle rounded-pill px-2 py-0 small d-block mt-1 text-nowrap" style="font-size: 0.68rem;">
                                     <i class="fa-solid fa-triangle-exclamation me-1"></i>Over Budget
                                 </span>
                                 {% endif %}
                             </td>
                             <td class="text-center text-nowrap">
-                                {% if pr.status == 'BUDGET_REVIEW' %}
+                                {% if pr.status == 'BUDGET_REVIEW' or pr.is_over_budget %}
                                 <span class="badge bg-danger text-white rounded-pill px-3 py-1">
                                     <i class="fa-solid fa-triangle-exclamation me-1"></i> Budget Review
                                 </span>
@@ -461,10 +476,10 @@
                                 {% endif %}
                             </td>
                             <td class="text-center text-nowrap">
-                                {% if pr.status == 'MANAGER_REVIEW' %}
-                                    <span class="text-muted small"><i class="fa-solid fa-user-tie me-1"></i> Department Approver</span>
-                                {% elif pr.status == 'BUDGET_REVIEW' %}
+                                {% if pr.status == 'BUDGET_REVIEW' or pr.is_over_budget %}
                                     <span class="text-danger small fw-semibold"><i class="fa-solid fa-calculator me-1"></i> Finance / Budget Exception</span>
+                                {% elif pr.status == 'MANAGER_REVIEW' %}
+                                    <span class="text-muted small"><i class="fa-solid fa-user-tie me-1"></i> Department Approver</span>
                                 {% else %}
                                     <span class="text-muted small"><i class="fa-solid fa-user-tie me-1"></i> Routing...</span>
                                 {% endif %}
@@ -502,8 +517,8 @@
                 <div class="bg-light rounded-circle d-inline-flex align-items-center justify-content-center mb-3" style="width: 80px; height: 80px;">
                     <i class="fa-solid fa-check-double text-success fs-1"></i>
                 </div>
-                <h5 class="text-muted fw-bold">All caught up!</h5>
-                <p class="text-secondary mb-0">You don't have any requests pending approval.</p>
+                <h5 class="text-muted fw-bold">{% if status_filter or search_q %}No matching requisitions found{% else %}All caught up!{% endif %}</h5>
+                <p class="text-secondary mb-0">{% if status_filter or search_q %}Try clearing filters to see all pending approvals.{% else %}You don't have any requests pending approval.{% endif %}</p>
             </div>
             {% endif %}
         {% endif %}

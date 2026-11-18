@@ -39,14 +39,15 @@ class ManagerKPIsAPIView(APIView):
         now = timezone.now()
         org = get_user_org(request.user)
 
-        # 1. Pending Award Approvals
+        # 1. Pending Award Approvals (events in review/award approval with submitted bids)
         pending_awards_qs = SourcingEvent.objects.filter(
             status__in=[
                 SourcingEvent.STATUS_AWARD_APPROVAL,
                 SourcingEvent.STATUS_COMMERCIAL_REVIEW,
                 SourcingEvent.STATUS_TECHNICAL_REVIEW,
-            ]
-        )
+            ],
+            bids__status__in=["SUBMITTED", "AMENDED"],
+        ).distinct()
         if org:
             is_hpe_org = org.code in ["ORG-HPE-01", "HPE-GLOBAL"] or "Hewlett Packard" in org.name
             org_filter = (
@@ -1897,23 +1898,57 @@ class ManagerVendorWatchlistAPIView(APIView):
         target_ids = list(high_risk_ids.union(governance_status_ids))
         qs = (
             Vendor.objects.filter(id__in=target_ids)
+            .filter(status__in=[Vendor.STATUS_ACTIVE, Vendor.STATUS_ON_HOLD, Vendor.STATUS_SUSPENDED])
             .select_related("category")
-            .order_by("-updated_at")
         )
         if org:
-            qs = qs.filter(organization=org)
+            is_hpe_org = org.code in ["ORG-HPE-01", "HPE-GLOBAL"] or "Hewlett Packard" in org.name
+            v_org_filter = Q(organization=org) | (Q(organization__isnull=True) & Q(created_by__organization=org))
+            if is_hpe_org:
+                v_org_filter |= Q(organization__isnull=True, created_by__isnull=True)
+            qs = qs.filter(v_org_filter)
         elif not request.user.is_superuser:
             qs = qs.none()
+
+        from django.db.models import Case, IntegerField, Value, When
+
+        qs = qs.annotate(
+            is_test_vendor=Case(
+                When(legal_name__istartswith="QA ", then=Value(1)),
+                When(legal_name__istartswith="Test ", then=Value(1)),
+                default=Value(0),
+                output_field=IntegerField(),
+            )
+        ).order_by("is_test_vendor", "-updated_at")
+
+        if qs.filter(is_test_vendor=0).exists():
+            qs = qs.filter(is_test_vendor=0)
+
         qs = qs[:15]
 
-        # If empty, fallback to recently updated vendors in scope so dashboard is never empty
+        # If empty, fallback to active or governed vendors in scope so dashboard is never empty
         if not qs.exists():
+            fallback_qs = Vendor.objects.filter(
+                status__in=[Vendor.STATUS_ACTIVE, Vendor.STATUS_ON_HOLD, Vendor.STATUS_SUSPENDED]
+            ).select_related("category")
             if org:
-                qs = Vendor.objects.filter(organization=org).select_related("category").order_by("-updated_at")[:5]
-            elif request.user.is_superuser:
-                qs = Vendor.objects.select_related("category").order_by("-updated_at")[:5]
-            else:
-                qs = Vendor.objects.none()
+                fallback_qs = fallback_qs.filter(v_org_filter)
+            elif not request.user.is_superuser:
+                fallback_qs = fallback_qs.none()
+
+            fallback_qs = fallback_qs.annotate(
+                is_test_vendor=Case(
+                    When(legal_name__istartswith="QA ", then=Value(1)),
+                    When(legal_name__istartswith="Test ", then=Value(1)),
+                    default=Value(0),
+                    output_field=IntegerField(),
+                )
+            ).order_by("is_test_vendor", "-updated_at")
+
+            if fallback_qs.filter(is_test_vendor=0).exists():
+                fallback_qs = fallback_qs.filter(is_test_vendor=0)
+
+            qs = fallback_qs[:10]
 
         vendor_ids = [v.id for v in qs]
         from apps.orders.models import PurchaseOrder
@@ -2109,7 +2144,7 @@ class ManagerApprovalsAPIView(APIView):
         # New Purchase Orders awaiting approval (DRAFT -> APPROVAL lifecycle)
         po_approval_qs = PurchaseOrder.objects.select_related(
             'vendor', 'cost_center__department', 'submitted_by'
-        ).filter(status=PurchaseOrder.STATUS_APPROVAL)
+        ).prefetch_related('lines').filter(status=PurchaseOrder.STATUS_APPROVAL)
         if org:
             po_approval_qs = po_approval_qs.filter(
                 Q(cost_center__department__organization=org)
@@ -2129,7 +2164,7 @@ class ManagerApprovalsAPIView(APIView):
         if tab == 'history':
             po_filtered = po_approval_qs.model.objects.select_related(
                 'vendor', 'cost_center__department', 'submitted_by', 'approved_by'
-            ).filter(
+            ).prefetch_related('lines').filter(
                 status__in=po_history_statuses,
                 approved_by__isnull=False,
             )
@@ -2181,25 +2216,7 @@ class ManagerApprovalsAPIView(APIView):
 
         # Process PRs
         if type_filter in ['all', 'pr', 'requisition']:
-            from django.db.models import Count
-
-            from apps.approvals.models import ApprovalAction, ApprovalPolicy
-            from apps.approvals.services import evaluate_approval_chain
-
             pr_list = list(prs_filtered.order_by('-updated_at')[:100])
-            pr_step_counts = {}
-            if pr_list:
-                pr_step_counts = {
-                    str(k): v
-                    for k, v in ApprovalAction.objects.filter(
-                        target_object_id__in=[str(p.id) for p in pr_list],
-                        target_model_name="PurchaseRequisition",
-                        action=ApprovalAction.ACTION_APPROVE,
-                    )
-                    .values("target_object_id")
-                    .annotate(cnt=Count("id"))
-                    .values_list("target_object_id", "cnt")
-                }
 
             # Prefetch active budgets for PR cost centers
             cc_ids = [p.cost_center_id for p in pr_list if p.cost_center_id]
@@ -2221,8 +2238,9 @@ class ManagerApprovalsAPIView(APIView):
                 if not req_name and pr.requester:
                     req_name = pr.requester.email or "Requester"
 
+                # Procurement Managers maintain approval oversight only (DEF-010). Direct approval is restricted.
                 can_approve_pr = False
-                can_reject_pr = is_out_of_budget
+                can_reject_pr = bool(is_out_of_budget or pr.status == PurchaseRequisition.STATUS_BUDGET_REVIEW)
 
                 items.append({
                     'id': str(pr.id),
@@ -2417,44 +2435,10 @@ class ManagerApprovalActionAPIView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if not request.user.is_superuser:
-            role_code = getattr(request.user, "role_code", None) or (
-                request.user.role.code if getattr(request.user, "role", None) else None
-            )
-            if role_code in [Role.PROC_MGR, "PROC_MGR"]:
-                if item_type == 'PR':
-                    if action == 'APPROVE':
-                        return Response(
-                            {'error': 'Permission Denied: Procurement Managers maintain approval oversight only and do not have authority to approve Purchase Requisitions.'},
-                            status=status.HTTP_403_FORBIDDEN,
-                        )
-                    # For rejection of PR: Procure Manager can inspect and reject out-of-budget PRs
-                    from apps.requisitions.models import PurchaseRequisition
-                    target_pr = PurchaseRequisition.objects.filter(id=item_id).first()
-                    if not target_pr:
-                        return Response({'error': 'Purchase Requisition not found.'}, status=status.HTTP_404_NOT_FOUND)
-                    if not check_pr_out_of_budget(target_pr):
-                        return Response(
-                            {'error': 'Permission Denied: Within-budget requisitions are reviewed by Procurement Executives. Procurement Managers may only inspect and reject out-of-budget requisitions.'},
-                            status=status.HTTP_403_FORBIDDEN,
-                        )
-                elif item_type == 'PO_AMENDMENT':
-                    return Response(
-                        {'error': 'Permission Denied: Procurement Managers maintain approval oversight only for PO amendments.'},
-                        status=status.HTTP_403_FORBIDDEN,
-                    )
-                elif item_type not in ['PO']:
-                    return Response(
-                        {'error': 'Permission Denied: Procurement Managers maintain approval oversight only and cannot approve or reject this item.'},
-                        status=status.HTTP_403_FORBIDDEN,
-                    )
-
         try:
             if item_type == 'PR':
                 from django.core.exceptions import ValidationError as DjangoValidationError
 
-                from apps.approvals.models import ApprovalAction, ApprovalPolicy
-                from apps.approvals.services import evaluate_approval_chain
                 from apps.requisitions.services import (
                     approve_purchase_requisition_service,
                     reject_purchase_requisition_service,
@@ -2479,17 +2463,29 @@ class ManagerApprovalActionAPIView(APIView):
                             status=status.HTTP_403_FORBIDDEN,
                         )
 
+                user_role = getattr(request.user, "role_code", None) or (
+                    request.user.role.code if getattr(request.user, "role", None) else ""
+                )
+                if not request.user.is_superuser and user_role in [Role.PROC_MGR, "PROC_MGR"]:
+                    if action == 'APPROVE':
+                        return Response(
+                            {'error': 'Permission Denied: Procurement Managers maintain approval oversight only and do not have authority to approve Purchase Requisitions directly.'},
+                            status=status.HTTP_403_FORBIDDEN,
+                        )
+                    # For REJECT: only out-of-budget PRs can be rejected by Procurement Manager
+                    is_out_of_budget = (pr.status == PurchaseRequisition.STATUS_BUDGET_REVIEW) or check_pr_out_of_budget(pr)
+                    if not is_out_of_budget:
+                        return Response(
+                            {'error': 'Permission Denied: Procurement Managers maintain approval oversight only. Rejections are restricted to out-of-budget requisitions.'},
+                            status=status.HTTP_403_FORBIDDEN,
+                        )
+
                 try:
                     if action == 'APPROVE':
-                        if not request.user.is_superuser:
-                            return Response(
-                                {'error': 'Permission Denied: Procurement Managers maintain approval oversight only and do not have authority to approve Purchase Requisitions.'},
-                                status=status.HTTP_403_FORBIDDEN,
-                            )
                         updated_pr = approve_purchase_requisition_service(
                             requisition=pr,
                             approver=request.user,
-                            comments=comments or 'Approved by Administrator.',
+                            comments=comments or 'Approved by Procurement Manager.',
                         )
                         return Response({
                             'success': True,
@@ -2591,6 +2587,15 @@ class ManagerApprovalActionAPIView(APIView):
                             {'error': 'Permission Denied: PO Amendment belongs to another organization.'},
                             status=status.HTTP_403_FORBIDDEN,
                         )
+                user_role = getattr(request.user, "role_code", None) or (
+                    request.user.role.code if getattr(request.user, "role", None) else ""
+                )
+                if not request.user.is_superuser and user_role in [Role.PROC_MGR, "PROC_MGR"]:
+                    return Response(
+                        {'error': 'Permission Denied: Procurement Managers maintain approval oversight only and cannot approve or reject PO amendments directly.'},
+                        status=status.HTTP_403_FORBIDDEN,
+                    )
+
                 if action == 'APPROVE':
                     updated_po = approve_po_amendment_service(
                         amendment=amendment,
