@@ -56,6 +56,12 @@ class ContractCreateForm(forms.ModelForm):
             ),
         }
 
+    def clean_contract_value(self):
+        val = self.cleaned_data.get("contract_value")
+        if val is not None and val <= 0:
+            raise forms.ValidationError("Contract value must be greater than zero.")
+        return val
+
     def clean(self):
         cleaned_data = super().clean()
         start_date = cleaned_data.get("start_date")
@@ -89,6 +95,20 @@ class ContractAmendmentForm(forms.Form):
     end_date = forms.DateField(
         widget=forms.DateInput(attrs={"class": "form-control", "type": "date"}), required=True
     )
+
+    def clean_contract_value(self):
+        val = self.cleaned_data.get("contract_value")
+        if val is not None and val <= 0:
+            raise forms.ValidationError("Contract value must be greater than zero.")
+        return val
+
+    def clean(self):
+        cleaned_data = super().clean()
+        start_date = cleaned_data.get("start_date")
+        end_date = cleaned_data.get("end_date")
+        if start_date and end_date and end_date < start_date:
+            raise forms.ValidationError("Contract end date cannot be earlier than start date.")
+        return cleaned_data
 
 
 class ContractMilestoneForm(forms.ModelForm):

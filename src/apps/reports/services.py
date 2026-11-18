@@ -4,6 +4,7 @@ import io
 from django.core.files.base import ContentFile
 from django.utils import timezone
 
+from apps.accounts.models import Role
 from apps.audit.models import AuditLog
 from apps.contracts.models import Contract
 from apps.invoices.models import MatchException
