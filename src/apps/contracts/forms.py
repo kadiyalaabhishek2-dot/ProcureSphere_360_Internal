@@ -7,12 +7,26 @@ from apps.vendors.models import Vendor
 from .models import Contract, ContractDocument, ContractMilestone, ContractObligation
 
 
+class VendorContractChoiceField(forms.ModelChoiceField):
+    """
+    Clean formatted dropdown label for Vendor selection in Contract drafting.
+    Omits raw status tags like [ACTIVE], [SUSPENDED] for clean, enterprise UI presentation.
+    """
+
+    def label_from_instance(self, obj):
+        if getattr(obj, "vendor_number", None):
+            return f"{obj.legal_name} ({obj.vendor_number})"
+        return str(obj.legal_name)
+
+
 class ContractCreateForm(forms.ModelForm):
-    vendor = forms.ModelChoiceField(
-        queryset=Vendor.objects.all(),
-        widget=forms.Select(attrs={"class": "form-select"}),
+    vendor = VendorContractChoiceField(
+        queryset=Vendor.objects.exclude(
+            status__in=[Vendor.STATUS_SUSPENDED, Vendor.STATUS_REJECTED]
+        ).order_by("legal_name"),
+        widget=forms.Select(attrs={"class": "form-select", "data-placeholder": "Search and select vendor..."}),
         required=True,
-        empty_label="-- Select Vendor --",
+        empty_label="-- Select Active Vendor --",
     )
     sourcing_event = forms.ModelChoiceField(
         queryset=SourcingEvent.objects.all(),

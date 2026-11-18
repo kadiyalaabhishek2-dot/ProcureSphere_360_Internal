@@ -505,8 +505,8 @@
 
         <!-- Reject Modal -->
         <div class="modal fade text-start" id="rejectCredsModal{{ dispatch.id }}" tabindex="-1" aria-labelledby="rejectModalLabel{{ dispatch.id }}" aria-hidden="true">
-            <div class="modal-dialog modal-dialog-centered">
-                <div class="modal-content rounded-4 border-0 shadow" style="overflow: hidden;">
+            <div class="modal-dialog modal-dialog-centered" style="max-width: 520px; width: 95%;">
+                <div class="modal-content rounded-4 border-0 shadow overflow-hidden" style="max-width: 100%;">
                     <div class="modal-header border-bottom py-3 px-4">
                         <h5 class="modal-title fw-bold font-heading text-danger mb-0" id="rejectModalLabel{{ dispatch.id }}">
                             <i class="fa-solid fa-triangle-exclamation me-2"></i> Reject Vendor Credentials
@@ -515,9 +515,9 @@
                     </div>
                     <form method="post" action="{% url 'legal_reject_credentials' dispatch_id=dispatch.id %}">
                         {% csrf_token %}
-                        <div class="modal-body p-4">
-                            <p class="text-muted small mb-3">
-                                Review decision for <strong>{{ dispatch.vendor.legal_name }}</strong> (<code>{{ dispatch.sent_to }}</code>). Select the review action below:
+                        <div class="modal-body p-4 text-break" style="word-break: break-word; overflow-wrap: break-word; max-width: 100%;">
+                            <p class="text-muted small mb-3 text-break" style="word-break: break-word; overflow-wrap: break-word;">
+                                Review decision for <strong class="text-dark">{{ dispatch.vendor.legal_name }}</strong> (<span class="font-monospace text-navy text-break" style="word-break: break-all;">{{ dispatch.sent_to }}</span>). Select the review action below:
                             </p>
                             <div class="mb-3">
                                 <label class="form-label fw-semibold small text-dark mb-2">Review Action Type</label>
