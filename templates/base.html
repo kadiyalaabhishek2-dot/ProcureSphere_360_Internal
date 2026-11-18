@@ -38,20 +38,11 @@
                     sessionStorage.getItem('ps_last_subpage_path') ||
                     sessionStorage.getItem('ps_is_internal_navigation') === 'true'
                 );
-                if (hasSubpageHistory) {
-                    sessionStorage.removeItem('ps_is_internal_navigation');
-                    sessionStorage.removeItem('ps360_user_signed_out');
-                    localStorage.removeItem('ps360_user_signed_out');
-                    document.cookie = "ps360_user_signed_out=; path=/; max-age=0";
-                    document.cookie = "ps360_just_logged_out=; path=/; max-age=0";
-                    return;
-                }
-                if (sessionStorage.getItem('ps360_user_signed_out') === 'true' ||
-                    localStorage.getItem('ps360_user_signed_out') ||
-                    document.cookie.indexOf('ps360_user_signed_out=1') !== -1 ||
-                    document.cookie.indexOf('ps360_just_logged_out=1') !== -1) {
-                    window.location.replace('/login/?reason=signed_out');
-                }
+                sessionStorage.removeItem('ps_is_internal_navigation');
+                sessionStorage.removeItem('ps360_user_signed_out');
+                localStorage.removeItem('ps360_user_signed_out');
+                document.cookie = "ps360_user_signed_out=; path=/; max-age=0; SameSite=Lax";
+                document.cookie = "ps360_just_logged_out=; path=/; max-age=0; SameSite=Lax";
             } catch(e) {}
         })();
     </script>
