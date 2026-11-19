@@ -431,6 +431,7 @@ def vendor_profile_view(request):
                     try:
                         file_name = getattr(doc_file, "name", "")
                         ext = os.path.splitext(file_name)[1][1:].lower() if "." in file_name else ""
+                        raw_content_type = getattr(doc_file, "content_type", "") or ""
 
                         ALLOWED_KYC_EXTENSIONS = {"pdf", "png", "jpg", "jpeg", "doc", "docx"}
                         DISALLOWED_SPREADSHEET_EXTENSIONS = {"xlsx", "xls", "csv"}
