@@ -890,9 +890,9 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
             return Response(
                 {
                     "error": {
-                        "code": "INVALID_STATE",
-                        "message": f"Cannot issue Purchase Order in status '{po.status}'. PO must be in APPROVED status.",
-                        "details": {"status": [f"Cannot issue PO in status '{po.status}'."]},
+                        "code": "INVALID_TRANSITION",
+                        "message": f"Cannot issue PO in status '{po.status}'. Must be APPROVED.",
+                        "details": {"status": [f"Cannot issue PO in status '{po.status}'. Must be APPROVED."]},
                     }
                 },
                 status=status.HTTP_400_BAD_REQUEST,
