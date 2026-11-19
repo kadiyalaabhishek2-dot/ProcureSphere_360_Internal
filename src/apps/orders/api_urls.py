@@ -521,20 +521,23 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
             is_valid_uuid = False
 
         from django.db.models import Q
-        queryset = self.filter_queryset(self.get_queryset())
+        base_qs = scope_purchase_orders_queryset(self.queryset, self.request.user)
         if is_valid_uuid:
-            obj = queryset.filter(Q(pk=lookup_val) | Q(po_number__iexact=str(lookup_val))).first()
+            obj = base_qs.filter(Q(pk=lookup_val) | Q(po_number__iexact=str(lookup_val))).first()
         else:
-            obj = queryset.filter(po_number__iexact=str(lookup_val)).first()
+            obj = base_qs.filter(po_number__iexact=str(lookup_val)).first()
 
         if not obj:
-            base_qs = scope_purchase_orders_queryset(PurchaseOrder.objects.all(), self.request.user)
+            unrestricted_qs = PurchaseOrder.objects.all()
             if is_valid_uuid:
-                obj = base_qs.filter(Q(pk=lookup_val) | Q(po_number__iexact=str(lookup_val))).first()
+                unrestricted_obj = unrestricted_qs.filter(Q(pk=lookup_val) | Q(po_number__iexact=str(lookup_val))).first()
             else:
-                obj = base_qs.filter(po_number__iexact=str(lookup_val)).first()
+                unrestricted_obj = unrestricted_qs.filter(po_number__iexact=str(lookup_val)).first()
 
-        if not obj:
+            if unrestricted_obj:
+                from rest_framework.exceptions import PermissionDenied
+                raise PermissionDenied("You do not have permission to access this Purchase Order.")
+
             from rest_framework.exceptions import NotFound
             raise NotFound(f"Purchase Order '{lookup_val}' not found.")
 
@@ -544,6 +547,9 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         qs = scope_purchase_orders_queryset(self.queryset, user)
+
+        if getattr(self, "action", None) and self.action != "list":
+            return qs
 
         # Filter by search param
         search_query = self.request.query_params.get("search", "").strip()
