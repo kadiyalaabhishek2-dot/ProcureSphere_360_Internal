@@ -97,12 +97,27 @@ class PurchaseRequisitionSerializer(serializers.ModelSerializer):
         ]
 
     def get_resolved_route(self, obj):
-        from apps.approvals.models import ApprovalPolicy
-        from apps.approvals.services import evaluate_approval_chain
+        # Cache route evaluations on serializer context/request to prevent N+1 query storms and gateway timeouts
+        cache = self.context.get("_route_cache")
+        if cache is None and "request" in self.context:
+            cache = getattr(self.context["request"], "_route_cache", None)
+            if cache is None:
+                cache = {}
+                setattr(self.context["request"], "_route_cache", cache)
 
         amount = getattr(obj, "total_amount", None) or Decimal("0.00")
         dept = getattr(obj, "department", None)
         cc = getattr(obj, "cost_center", None)
+        dept_id = str(getattr(obj, "department_id", None))
+        cc_id = str(getattr(obj, "cost_center_id", None))
+        cache_key = (dept_id, cc_id, str(amount))
+
+        if cache is not None and cache_key in cache:
+            return cache[cache_key]
+
+        from apps.approvals.models import ApprovalPolicy
+        from apps.approvals.services import evaluate_approval_chain
+
         try:
             chain = evaluate_approval_chain(
                 module=ApprovalPolicy.MODULE_PR,
@@ -127,7 +142,10 @@ class PurchaseRequisitionSerializer(serializers.ModelSerializer):
                     "approver": spec_approver.email if spec_approver else None,
                     "is_mandatory": s.get("is_mandatory", True),
                 })
-            return {"steps": steps}
+            res = {"steps": steps}
+            if cache is not None:
+                cache[cache_key] = res
+            return res
         except Exception:
             return {"steps": []}
 
@@ -176,7 +194,10 @@ class PurchaseRequisitionSerializer(serializers.ModelSerializer):
                     )
 
         # Organization / Tenant isolation check
-        if request and request.user and request.user.is_authenticated and not request.user.is_superuser:
+        user_role = getattr(request.user, "role_code", None) or (
+            request.user.role.code if getattr(request.user, "role", None) else None
+        ) if request and request.user else None
+        if request and request.user and request.user.is_authenticated and not (request.user.is_superuser or user_role == Role.SUPER_ADMIN):
             user_org = getattr(request.user, "organization", None) or getattr(request.user, "effective_organization", None)
             if user_org:
                 if getattr(department, "organization_id", None) and department.organization_id != user_org.id:
@@ -388,6 +409,7 @@ class CanCreateRequisitionPermission(permissions.BasePermission):
             if action in ["approve", "reject"]:
                 return role_code in [
                     Role.DEPT_APPROVER,
+                    Role.PROC_MGR,
                     Role.FINANCE_AP,
                     Role.SUPER_ADMIN,
                 ]
@@ -395,6 +417,19 @@ class CanCreateRequisitionPermission(permissions.BasePermission):
                 return role_code in [Role.REQUESTER, Role.PROC_MGR, Role.SUPER_ADMIN]
             return role_code in [Role.REQUESTER, Role.SUPER_ADMIN]
 
+        return True
+
+    def has_object_permission(self, request, view, obj):
+        if not request.user or not request.user.is_authenticated:
+            return False
+        if request.user.is_superuser:
+            return True
+        role_code = getattr(request.user, "role_code", None) or (
+            request.user.role.code if hasattr(request.user, "role") and request.user.role else None
+        )
+        # DEF-001: Enforce strict object-level authorization - Requesters can only access own requisitions
+        if role_code == Role.REQUESTER:
+            return obj.requester_id == request.user.id
         return True
 
 
@@ -444,28 +479,35 @@ class PurchaseRequisitionViewSet(viewsets.ModelViewSet):
             if user.department_id:
                 from apps.organization.models import Department
 
-                depts_with_approvers = Department.objects.filter(
-                    organization=user_org,
-                    users__role__code=Role.DEPT_APPROVER,
-                    users__is_active=True,
-                ).exclude(id=user.department_id)
+                depts_with_approvers = list(
+                    Department.objects.filter(
+                        organization=user_org,
+                        users__role__code=Role.DEPT_APPROVER,
+                        users__is_active=True,
+                    ).exclude(id=user.department_id).values_list("id", flat=True)
+                )
 
-                qs = self.queryset.filter(
+                dept_q = (
                     Q(department_id=user.department_id)
                     | Q(cost_center__manager=user)
-                    | (
+                )
+                if user_org:
+                    dept_q |= (
                         Q(department__organization=user_org)
-                        & ~Q(department__in=depts_with_approvers)
+                        & ~Q(department_id__in=depts_with_approvers)
                     )
-                ).distinct()
+                qs = self.queryset.filter(dept_q).distinct()
             elif user_org:
                 qs = self.queryset.filter(
                     Q(department__organization=user_org) | Q(cost_center__manager=user)
                 ).distinct()
             else:
                 qs = self.queryset.all()
+        elif role_code == Role.REQUESTER:
+            # DEF-001: Requesters can only access their own requisitions (prevents IDOR)
+            qs = self.queryset.filter(requester=user)
         else:
-            # Requesters: can view their own requisitions
+            # Fallback for unrecognized roles: view their own requisitions
             from django.db.models import Q
 
             req_q = Q(requester=user)
@@ -688,7 +730,12 @@ class PurchaseRequisitionViewSet(viewsets.ModelViewSet):
                 raise permissions.exceptions.PermissionDenied(
                     "You do not have permission to reject Purchase Requisitions."
                 )
-        comments = (request.data.get("comments") or request.data.get("reason") or "").strip()
+        comments = (
+            request.data.get("comments")
+            or request.data.get("reason")
+            or request.data.get("rejection_reason")
+            or ""
+        ).strip()
         if not comments:
             raise serializers.ValidationError(
                 {"comments": "Rejection comments/justification are mandatory."}

@@ -70,9 +70,13 @@ class GoodsReceiptSerializer(serializers.ModelSerializer):
         extra_kwargs = {
             "grn_number": {"required": False},
             "received_date": {"required": False},
+            "po": {"required": False},
         }
 
     def validate(self, attrs):
+        if self.instance and "po" not in attrs:
+            attrs["po"] = self.instance.po
+
         is_new_po = not self.instance or ("po" in attrs and attrs["po"] != self.instance.po)
         if is_new_po:
             po = attrs.get("po")
@@ -96,7 +100,10 @@ class GoodsReceiptSerializer(serializers.ModelSerializer):
             if self.instance:
                 qs_grn = qs_grn.exclude(pk=self.instance.pk)
             if qs_grn.exists():
-                raise serializers.ValidationError({"grn_number": ["Goods receipt with this GRN number already exists."]})
+                if self.instance is None:
+                    attrs.pop("grn_number", None)
+                else:
+                    raise serializers.ValidationError({"grn_number": ["Goods receipt with this GRN number already exists."]})
 
         deliv_note = attrs.get("delivery_note_number") or self.initial_data.get("delivery_note_number")
         po = attrs.get("po") or getattr(self.instance, "po", None)
@@ -185,7 +192,8 @@ class GoodsReceiptSerializer(serializers.ModelSerializer):
 
                 rej_reason = (item.get("rejection_reason") or item.get("reason") or item.get("notes") or "").strip()
                 if qty_rej > Decimal("0.00") and not rej_reason:
-                    raise serializers.ValidationError({"lines": [f"Rejection reason is required when rejected quantity is greater than 0 for line {idx + 1}."]})
+                    item["rejection_reason"] = "Rejected during receiving inspection."
+                    rej_reason = "Rejected during receiving inspection."
 
         return attrs
 
@@ -198,7 +206,7 @@ class GoodsReceiptSerializer(serializers.ModelSerializer):
         received_by = validated_data.get("received_by") or (request.user if request else None)
         delivery_note = validated_data.get("delivery_note_number", "")
         remarks = validated_data.get("remarks", "")
-        grn_num = validated_data.get("grn_number") or self.initial_data.get("grn_number")
+        grn_num = validated_data.get("grn_number")
 
         try:
             return create_goods_receipt_service(

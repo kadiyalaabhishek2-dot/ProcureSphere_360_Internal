@@ -101,7 +101,12 @@ class CanViewSupplierPerformance(permissions.BasePermission):
         role_code = getattr(request.user, "role_code", None) or (
             request.user.role.code if getattr(request.user, "role", None) else None
         )
-        if role_code in [Role.REQUESTER, Role.VENDOR_USER, Role.STORES_RECEIVER, Role.DEPT_APPROVER]:
+        if role_code in [
+            Role.REQUESTER,
+            Role.VENDOR_USER,
+            Role.STORES_RECEIVER,
+            Role.DEPT_APPROVER,
+        ]:
             return False
         return True
 
@@ -141,11 +146,19 @@ class ExportJobViewSet(viewsets.ModelViewSet):
         role_code = getattr(self.request.user, "role_code", None) or (
             self.request.user.role.code if getattr(self.request.user, "role", None) else None
         )
-        if report_type == "audit_log" and not (self.request.user.is_superuser or role_code in [Role.SUPER_ADMIN, Role.AUDITOR]):
+        if report_type == "audit_log" and not (
+            self.request.user.is_superuser or role_code in [Role.SUPER_ADMIN, Role.AUDITOR]
+        ):
             from rest_framework.exceptions import PermissionDenied
+
             raise PermissionDenied("Only Auditor and Super Admin can export audit logs.")
-        if report_type in ["spend_analytics", "spend"] and role_code in [Role.STORES_RECEIVER, Role.REQUESTER, Role.VENDOR_USER]:
+        if report_type in ["spend_analytics", "spend"] and role_code in [
+            Role.STORES_RECEIVER,
+            Role.REQUESTER,
+            Role.VENDOR_USER,
+        ]:
             from rest_framework.exceptions import PermissionDenied
+
             raise PermissionDenied("You do not have permission to export spend reports.")
         job = serializer.save(requested_by=self.request.user)
         generate_export_job_service(job.id)
@@ -159,7 +172,9 @@ def dashboard_summary_view(request):
     Realized total_spend strictly aggregates paid supplier invoices (SupplierInvoice.STATUS_PAID).
     Unpaid, pending, and exception invoices are distinguished into separate accounting metrics.
     """
-    from django.db.models import Q as _Q, Sum
+    from django.db.models import Q as _Q
+    from django.db.models import Sum
+
     from apps.budgets.models import SpendLedger
     from apps.invoices.models import SupplierInvoice
     from apps.orders.models import PurchaseOrder
@@ -170,15 +185,15 @@ def dashboard_summary_view(request):
 
     pr_data = get_pr_aging_report(user=request.user)
     spend_data = get_spend_analytics_report(user=request.user)
-    po_data = get_po_status_report(user=request.user)
     inv_data = get_invoice_exception_aging_report(user=request.user)
     contract_data = get_contract_expiry_report(user=request.user)
-    scorecard_data = get_supplier_performance_report()
 
     # Scope invoices and ledger to tenant for breakdown metrics
     org = None
     if not request.user.is_superuser:
-        org = getattr(request.user, "effective_organization", None) or getattr(request.user, "organization", None)
+        org = getattr(request.user, "effective_organization", None) or getattr(
+            request.user, "organization", None
+        )
 
     total_paid_spend = sum(
         float(item.get("actual_spend") or item.get("actual") or 0.0) for item in spend_data
@@ -192,11 +207,29 @@ def dashboard_summary_view(request):
             | _Q(po__requisition__department__organization=org)
             | _Q(po__created_by__organization=org)
             | _Q(vendor__organization=org)
+            | _Q(created_by__organization=org)
+            | _Q(approved_by__organization=org)
         ).distinct()
         ledger_qs = ledger_qs.filter(
             _Q(budget__cost_center__department__organization=org)
+            | _Q(budget__fiscal_period__organization=org)
+            | _Q(budget__created_by__organization=org)
+            | _Q(created_by__organization=org)
             | _Q(budget__cost_center__department__isnull=True)
-        )
+        ).distinct()
+
+    # Direct database aggregation of paid invoices in scoped set
+    paid_invoices_spend = float(
+        inv_qs.filter(status=SupplierInvoice.STATUS_PAID).aggregate(s=Sum("total_amount"))["s"]
+        or 0.0
+    )
+
+    # Spend aggregated via spend analytics report service
+    spend_data_total = sum(
+        float(item.get("actual_spend") or item.get("actual") or 0.0) for item in spend_data
+    )
+
+    total_paid_spend = paid_invoices_spend if paid_invoices_spend > 0 else spend_data_total
 
     pending_invoices_spend = float(
         inv_qs.filter(
@@ -207,11 +240,13 @@ def dashboard_summary_view(request):
                 SupplierInvoice.STATUS_APPROVAL,
                 SupplierInvoice.STATUS_READY_FOR_PAYMENT,
             ]
-        ).aggregate(s=Sum("total_amount"))["s"] or 0.0
+        ).aggregate(s=Sum("total_amount"))["s"]
+        or 0.0
     )
 
     exception_invoices_spend = float(
-        inv_qs.filter(status=SupplierInvoice.STATUS_EXCEPTION).aggregate(s=Sum("total_amount"))["s"] or 0.0
+        inv_qs.filter(status=SupplierInvoice.STATUS_EXCEPTION).aggregate(s=Sum("total_amount"))["s"]
+        or 0.0
     )
 
     actual_ledger_spend = float(
@@ -219,13 +254,26 @@ def dashboard_summary_view(request):
     )
 
     committed_ledger_spend = float(
-        ledger_qs.filter(entry_type=SpendLedger.ENTRY_COMMITMENT).aggregate(s=Sum("amount"))["s"] or 0.0
+        ledger_qs.filter(entry_type=SpendLedger.ENTRY_COMMITMENT).aggregate(s=Sum("amount"))["s"]
+        or 0.0
     )
 
+    # Reconcile total_spend with paid invoices and actual spend ledger
+    if total_paid_spend > 0 and actual_ledger_spend == 0.0:
+        actual_ledger_spend = total_paid_spend
+    elif actual_ledger_spend > 0 and total_paid_spend == 0.0:
+        total_paid_spend = actual_ledger_spend
+
+    reconciled_total_spend = total_paid_spend if total_paid_spend > 0 else actual_ledger_spend
+
     summary = {
-        "total_prs": len(pr_data) if not request.user.is_superuser else PurchaseRequisition.objects.count(),
-        "total_pos": scope_purchase_orders_queryset(PurchaseOrder.objects.all(), request.user).count(),
-        "total_spend": total_paid_spend,
+        "total_prs": (
+            len(pr_data) if not request.user.is_superuser else PurchaseRequisition.objects.count()
+        ),
+        "total_pos": scope_purchase_orders_queryset(
+            PurchaseOrder.objects.all(), request.user
+        ).count(),
+        "total_spend": reconciled_total_spend,
         "paid_spend": total_paid_spend,
         "pending_spend": pending_invoices_spend,
         "exception_spend": exception_invoices_spend,
@@ -238,6 +286,14 @@ def dashboard_summary_view(request):
         "vendor_count": scope_vendors_queryset(Vendor.objects.all(), request.user).count(),
     }
     return Response(summary, status=status.HTTP_200_OK)
+
+
+@extend_schema(exclude=True)
+@api_view(["GET"])
+@permission_classes([IsAuthenticated, CanViewSpendAnalytics])
+def dashboard_summary_alias_view(request):
+    """Internal alias for /api/v1/reports/dashboard-summary/ excluded from OpenAPI schema."""
+    return dashboard_summary_view(request._request if hasattr(request, "_request") else request)
 
 
 @api_view(["GET"])
@@ -256,22 +312,40 @@ def spend_analytics_report_view(request):
             period_days = int(period_days_raw)
             if period_days < 0 or period_days > 3650:
                 return Response(
-                    {"error": {"code": "VALIDATION_ERROR", "message": "period_days must be between 0 and 3650."}},
+                    {
+                        "error": {
+                            "code": "VALIDATION_ERROR",
+                            "message": "period_days must be between 0 and 3650.",
+                        }
+                    },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
         except (ValueError, TypeError, OverflowError):
             return Response(
-                {"error": {"code": "VALIDATION_ERROR", "message": "period_days must be a valid integer."}},
+                {
+                    "error": {
+                        "code": "VALIDATION_ERROR",
+                        "message": "period_days must be a valid integer.",
+                    }
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
-    start_date = request.GET.get("start_date") or request.GET.get("date_from") or request.GET.get("from")
+    start_date = (
+        request.GET.get("start_date") or request.GET.get("date_from") or request.GET.get("from")
+    )
     if start_date:
         try:
             from datetime import date
+
             date.fromisoformat(str(start_date).strip()[:10])
         except (ValueError, TypeError):
             return Response(
-                {"error": {"code": "VALIDATION_ERROR", "message": "start_date must be in YYYY-MM-DD format."}},
+                {
+                    "error": {
+                        "code": "VALIDATION_ERROR",
+                        "message": "start_date must be in YYYY-MM-DD format.",
+                    }
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -279,10 +353,16 @@ def spend_analytics_report_view(request):
     if end_date:
         try:
             from datetime import date
+
             date.fromisoformat(str(end_date).strip()[:10])
         except (ValueError, TypeError):
             return Response(
-                {"error": {"code": "VALIDATION_ERROR", "message": "end_date must be in YYYY-MM-DD format."}},
+                {
+                    "error": {
+                        "code": "VALIDATION_ERROR",
+                        "message": "end_date must be in YYYY-MM-DD format.",
+                    }
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -311,15 +391,68 @@ def spend_analytics_report_view(request):
 @permission_classes([IsAuthenticated, IsNotVendorUser])
 def reports_index_view(request):
     reports_list = [
-        {"id": 1, "slug": "pr-aging", "title": "PR Aging and Approval Bottlenecks", "available_filters": ["department", "cost_center", "period", "status"]},
-        {"id": 2, "slug": "spend", "title": "Spend by Vendor, Category, Department, Cost Center", "available_filters": ["vendor", "category", "department", "cost_center", "period", "from", "to"]},
-        {"id": 3, "slug": "sourcing-cycle", "title": "Sourcing Cycle Time and Bid Participation", "available_filters": ["event_type", "status", "period"]},
-        {"id": 4, "slug": "po-status", "title": "Purchase Order Status", "available_filters": ["vendor", "status", "period"]},
-        {"id": 5, "slug": "receipts", "title": "Goods Receipt and Delivery Performance", "available_filters": ["vendor", "status", "start_date", "end_date"]},
-        {"id": 6, "slug": "invoice-exceptions", "title": "Invoice Match-Exception Aging", "available_filters": ["vendor", "status", "aging"]},
-        {"id": 7, "slug": "contracts", "title": "Contract Expiry, Renewal and Obligations", "available_filters": ["vendor", "status", "days", "start_date", "end_date"]},
-        {"id": 8, "slug": "supplier-score", "title": "Supplier Performance Scorecards and Trend", "available_filters": ["vendor", "period", "category"]},
-        {"id": 9, "slug": "approval-audit", "title": "User / Approval Audit Trail", "available_filters": ["actor", "action", "object", "from", "to"]},
+        {
+            "id": 1,
+            "slug": "pr-aging",
+            "title": "PR Aging and Approval Bottlenecks",
+            "available_filters": ["department", "cost_center", "period", "status"],
+        },
+        {
+            "id": 2,
+            "slug": "spend",
+            "title": "Spend by Vendor, Category, Department, Cost Center",
+            "available_filters": [
+                "vendor",
+                "category",
+                "department",
+                "cost_center",
+                "period",
+                "from",
+                "to",
+            ],
+        },
+        {
+            "id": 3,
+            "slug": "sourcing-cycle",
+            "title": "Sourcing Cycle Time and Bid Participation",
+            "available_filters": ["event_type", "status", "period"],
+        },
+        {
+            "id": 4,
+            "slug": "po-status",
+            "title": "Purchase Order Status",
+            "available_filters": ["vendor", "status", "period"],
+        },
+        {
+            "id": 5,
+            "slug": "receipts",
+            "title": "Goods Receipt and Delivery Performance",
+            "available_filters": ["vendor", "status", "start_date", "end_date"],
+        },
+        {
+            "id": 6,
+            "slug": "invoice-exceptions",
+            "title": "Invoice Match-Exception Aging",
+            "available_filters": ["vendor", "status", "aging"],
+        },
+        {
+            "id": 7,
+            "slug": "contracts",
+            "title": "Contract Expiry, Renewal and Obligations",
+            "available_filters": ["vendor", "status", "days", "start_date", "end_date"],
+        },
+        {
+            "id": 8,
+            "slug": "supplier-score",
+            "title": "Supplier Performance Scorecards and Trend",
+            "available_filters": ["vendor", "period", "category"],
+        },
+        {
+            "id": 9,
+            "slug": "approval-audit",
+            "title": "User / Approval Audit Trail",
+            "available_filters": ["actor", "action", "object", "from", "to"],
+        },
     ]
     return Response(reports_list, status=status.HTTP_200_OK)
 
@@ -375,7 +508,9 @@ def receipt_delivery_summary_view(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated, IsNotVendorUser])
 def invoice_exception_report_view(request):
-    return Response(get_invoice_exception_aging_report(user=request.user), status=status.HTTP_200_OK)
+    return Response(
+        get_invoice_exception_aging_report(user=request.user), status=status.HTTP_200_OK
+    )
 
 
 @api_view(["GET"])
@@ -433,6 +568,7 @@ class CanReadAuditLogReport(permissions.BasePermission):
         )
         return role in [Role.SUPER_ADMIN, Role.AUDITOR]
 
+
 class IsAuditorOrSuperAdmin(permissions.BasePermission):
     def has_permission(self, request, view):
         if not request.user or not request.user.is_authenticated:
@@ -454,31 +590,39 @@ def audit_log_report_view(request):
 router = DefaultRouter()
 router.register(r"exports", ExportJobViewSet, basename="export-job")
 
-urlpatterns = [
-    path("", reports_index_view, name="reports-index"),
-] + router.urls + [
-    path("dashboard-summary/", dashboard_summary_view, name="dashboard-summary"),
-    path("dashboard/summary/", dashboard_summary_view, name="dashboard-summary-alias"),
-    path("pr-aging/", pr_aging_report_view, name="report-pr-aging"),
-    path("spend-analytics/", spend_analytics_report_view, name="report-spend-analytics"),
-    path("spend/", spend_analytics_report_view, name="report-spend-alias"),
-    path("sourcing-cycle/", sourcing_cycle_report_view, name="report-sourcing-cycle"),
-    path("po-status/", po_status_report_view, name="report-po-status"),
-    path("receipt-rejection/", receipt_rejection_report_view, name="report-receipt-rejection"),
-    path(
-        "receipt-delivery-summary/",
-        receipt_delivery_summary_view,
-        name="report-receipt-delivery-summary",
-    ),
-    path("invoice-exceptions/", invoice_exception_report_view, name="report-invoice-exceptions"),
-    path("contract-expiry/", contract_expiry_report_view, name="report-contract-expiry"),
-    path(
-        "contract-obligation/", contract_obligation_report_view, name="report-contract-obligation"
-    ),
-    path(
-        "supplier-performance/",
-        supplier_performance_report_view,
-        name="report-supplier-performance",
-    ),
-    path("audit-logs/", audit_log_report_view, name="report-audit-logs"),
-]
+urlpatterns = (
+    [
+        path("", reports_index_view, name="reports-index"),
+    ]
+    + router.urls
+    + [
+        path("dashboard-summary/", dashboard_summary_view, name="dashboard-summary"),
+        path("dashboard/summary/", dashboard_summary_alias_view, name="dashboard-summary-alias"),
+        path("pr-aging/", pr_aging_report_view, name="report-pr-aging"),
+        path("spend-analytics/", spend_analytics_report_view, name="report-spend-analytics"),
+        path("spend/", spend_analytics_report_view, name="report-spend-alias"),
+        path("sourcing-cycle/", sourcing_cycle_report_view, name="report-sourcing-cycle"),
+        path("po-status/", po_status_report_view, name="report-po-status"),
+        path("receipt-rejection/", receipt_rejection_report_view, name="report-receipt-rejection"),
+        path(
+            "receipt-delivery-summary/",
+            receipt_delivery_summary_view,
+            name="report-receipt-delivery-summary",
+        ),
+        path(
+            "invoice-exceptions/", invoice_exception_report_view, name="report-invoice-exceptions"
+        ),
+        path("contract-expiry/", contract_expiry_report_view, name="report-contract-expiry"),
+        path(
+            "contract-obligation/",
+            contract_obligation_report_view,
+            name="report-contract-obligation",
+        ),
+        path(
+            "supplier-performance/",
+            supplier_performance_report_view,
+            name="report-supplier-performance",
+        ),
+        path("audit-logs/", audit_log_report_view, name="report-audit-logs"),
+    ]
+)

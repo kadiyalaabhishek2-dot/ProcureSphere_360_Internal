@@ -18,9 +18,7 @@ from django.views.decorators.http import require_POST
 
 from apps.accounts.models import Role
 from apps.audit.models import AuditLog
-from apps.contracts.models import (
-    Contract,
-)
+from apps.contracts.models import Contract
 from apps.invoices.models import InvoiceLine, PaymentStatus, SupplierInvoice
 from apps.invoices.services import create_supplier_invoice_service
 from apps.notifications.models import Notification
@@ -325,36 +323,23 @@ def vendor_profile_view(request):
                         ("Other Document", other_file, other_type, other_title, other_expiry)
                     )
 
-                DISALLOWED_EXTENSIONS = {
-                    "exe",
-                    "sh",
-                    "bat",
-                    "cmd",
-                    "py",
-                    "js",
-                    "html",
-                    "htm",
-                    "php",
-                    "bin",
-                    "msi",
-                    "vbs",
-                    "com",
-                    "dll",
-                }
-                SUPPORTED_DOCUMENT_EXTENSIONS = {
-                    "pdf",
-                    "png",
-                    "jpg",
-                    "jpeg",
-                    "doc",
-                    "docx",
-                    "xlsx",
-                    "csv",
+                from datetime import datetime
+
+                today_date = timezone.now().date()
+
+                # KYC Policy: Permit secure formats (PDF, PNG, JPG, JPEG, DOC, DOCX); Reject spreadsheets (XLSX, XLS, CSV)
+                ALLOWED_KYC_EXTENSIONS = {"pdf", "png", "jpg", "jpeg", "doc", "docx"}
+                DISALLOWED_SPREADSHEET_EXTENSIONS = {"xlsx", "xls", "csv"}
+                DISALLOWED_SPREADSHEET_MIMES = {
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    "application/vnd.ms-excel",
+                    "text/csv",
+                    "application/csv",
                 }
                 MAX_FILE_SIZE = 10 * 1024 * 1024
 
                 validation_errors = []
-                for label, f, _, _, _ in files_to_process:
+                for label, f, _, _, expiry in files_to_process:
                     file_name = getattr(f, "name", "")
                     file_size = getattr(f, "size", 0) or 0
                     ext = os.path.splitext(file_name)[1][1:].lower() if "." in file_name else ""
@@ -368,14 +353,32 @@ def vendor_profile_view(request):
                             f"{label}: File '{file_name}' exceeds the maximum allowed limit of 10 MB."
                         )
 
-                    if ext in DISALLOWED_EXTENSIONS:
+                    raw_content_type = getattr(f, "content_type", "") or ""
+                    if (ext in DISALLOWED_SPREADSHEET_EXTENSIONS) or (
+                        raw_content_type in DISALLOWED_SPREADSHEET_MIMES
+                    ):
                         validation_errors.append(
-                            f"{label}: Executable or script files (.{ext}) are strictly prohibited. Please upload a supported document format (PDF, PNG, JPG, JPEG, DOC, DOCX, XLSX, CSV)."
+                            f"{label}: Editable spreadsheet files (.{ext or 'spreadsheet'}) are strictly prohibited for KYC verification. "
+                            "Please upload a secure document format (PDF, JPG, JPEG, PNG, DOC, DOCX)."
                         )
-                    elif ext not in SUPPORTED_DOCUMENT_EXTENSIONS:
+                    elif ext not in ALLOWED_KYC_EXTENSIONS:
                         validation_errors.append(
-                            f"{label}: File extension '.{ext}' is not permitted. Only PDF, PNG, JPG, JPEG, DOC, DOCX, XLSX, CSV are allowed."
+                            f"{label}: File format '.{ext}' is not permitted for KYC compliance. "
+                            "Allowed formats: PDF, JPG, JPEG, PNG, DOC, DOCX."
                         )
+
+                    # Validate expiry date: must not be in the past (BUG-028)
+                    if expiry:
+                        try:
+                            parsed_exp = datetime.strptime(expiry, "%Y-%m-%d").date()
+                            if parsed_exp < today_date:
+                                validation_errors.append(
+                                    f"{label}: Expiry date cannot be in the past ({expiry}). Please select a valid future date."
+                                )
+                        except (ValueError, TypeError):
+                            validation_errors.append(
+                                f"{label}: Invalid expiry date format ({expiry}). Expected YYYY-MM-DD."
+                            )
 
                 if validation_errors:
                     for err in validation_errors:
@@ -429,44 +432,43 @@ def vendor_profile_view(request):
                         file_name = getattr(doc_file, "name", "")
                         ext = os.path.splitext(file_name)[1][1:].lower() if "." in file_name else ""
 
-                        DISALLOWED_EXTENSIONS = {
-                            "exe",
-                            "sh",
-                            "bat",
-                            "cmd",
-                            "py",
-                            "js",
-                            "html",
-                            "htm",
-                            "php",
-                            "bin",
-                            "msi",
-                            "vbs",
-                            "com",
-                            "dll",
-                        }
-                        SUPPORTED_DOCUMENT_EXTENSIONS = {
-                            "pdf",
-                            "png",
-                            "jpg",
-                            "jpeg",
-                            "doc",
-                            "docx",
-                            "xlsx",
-                            "csv",
+                        ALLOWED_KYC_EXTENSIONS = {"pdf", "png", "jpg", "jpeg", "doc", "docx"}
+                        DISALLOWED_SPREADSHEET_EXTENSIONS = {"xlsx", "xls", "csv"}
+                        DISALLOWED_SPREADSHEET_MIMES = {
+                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            "application/vnd.ms-excel",
+                            "text/csv",
+                            "application/csv",
                         }
 
-                        if ext in DISALLOWED_EXTENSIONS:
+                        if (ext in DISALLOWED_SPREADSHEET_EXTENSIONS) or (
+                            raw_content_type in DISALLOWED_SPREADSHEET_MIMES
+                        ):
                             raise ValidationError(
-                                f"Executable or script files (.{ext}) are strictly prohibited. "
-                                "Please upload a supported document format (PDF, PNG, JPG, JPEG, DOC, DOCX, XLSX, CSV)."
+                                f"Editable spreadsheet files (.{ext or 'spreadsheet'}) are strictly prohibited for KYC verification. "
+                                "Please upload a secure document format (PDF, JPG, JPEG, PNG, DOC, DOCX)."
                             )
 
-                        if ext not in SUPPORTED_DOCUMENT_EXTENSIONS:
+                        if ext not in ALLOWED_KYC_EXTENSIONS:
                             raise ValidationError(
-                                f"File extension '.{ext}' is not permitted. "
-                                "Please upload a supported document file (PDF, PNG, JPG, JPEG, DOC, DOCX, XLSX, CSV)."
+                                f"File format '.{ext}' is not permitted for KYC compliance. "
+                                "Allowed formats: PDF, JPG, JPEG, PNG, DOC, DOCX."
                             )
+
+                        # Validate expiry date: must not be in the past (BUG-028)
+                        if expiry_date_val:
+                            try:
+                                from datetime import datetime
+
+                                parsed_exp = datetime.strptime(expiry_date_val, "%Y-%m-%d").date()
+                                if parsed_exp < timezone.now().date():
+                                    raise ValidationError(
+                                        f"Expiry date cannot be in the past ({expiry_date_val}). Please select a valid future date."
+                                    )
+                            except (ValueError, TypeError):
+                                raise ValidationError(
+                                    f"Invalid expiry date format ({expiry_date_val}). Expected YYYY-MM-DD."
+                                )
 
                         upload_vendor_document_service(
                             vendor=vendor,
@@ -709,6 +711,10 @@ def vendor_sourcing_list_view(request):
         .select_related("event", "event__requisition", "event__requisition__department")
         .order_by("-event__created_at")
     )
+
+    # Suspended vendors are blocked from receiving or participating in active RFP/RFQ events
+    if vendor.status == Vendor.STATUS_SUSPENDED:
+        invites_qs = invites_qs.filter(is_responded=True)
 
     if query:
         invites_qs = invites_qs.filter(
@@ -1699,7 +1705,9 @@ def vendor_purchase_order_detail_view(request, po_id):
             "Access Denied: You do not have authorization to view this purchase order."
         )
 
-    can_acknowledge = po.status == PurchaseOrder.STATUS_ISSUED
+    can_acknowledge = (po.status == PurchaseOrder.STATUS_ISSUED) and (
+        vendor.status != Vendor.STATUS_SUSPENDED
+    )
 
     # Calculate total accepted GRN quantity across all receipt lines for this PO
     all_receipt_lines = [rl for r in po.receipts.all() for rl in r.lines.all()]

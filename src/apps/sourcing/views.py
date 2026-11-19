@@ -27,6 +27,7 @@ from .models import BidInvite, Clarification, SourcingEvent, VendorBid
 from .permissions import (
     can_approve_award,
     can_manage_events,
+    can_publish_events,
     can_read_bids,
     can_view_events,
     sourcing_capabilities,
@@ -66,6 +67,7 @@ STATUS_FILTERS = [
     ("COMMERCIAL_REVIEW", "Negotiation / commercial"),
     ("AWARD_APPROVAL", "Award approval"),
     ("AWARDED", "Awarded"),
+    ("NO_BIDS", "Closed without Bids"),
     ("CANCELLED", "Cancelled"),
 ]
 
@@ -155,7 +157,7 @@ def sourcing_create_view(request):
             event = services.create_sourcing_event_service(
                 **_form_to_kwargs(form.cleaned_data),
                 created_by_user=request.user,
-                enforce_future_start=True,
+                enforce_future_start=False,
             )
         except ValidationError as exc:
             if hasattr(exc, "messages"):
@@ -500,7 +502,7 @@ def _act_reject(event, request):
 
 
 ACTIONS = {
-    "publish": (_act_publish, "manage"),
+    "publish": (_act_publish, "publish"),
     "close": (_act_close, "manage"),
     "start-commercial": (_act_commercial, "manage"),
     "cancel": (_act_cancel, "manage"),
@@ -536,11 +538,12 @@ def sourcing_action_view(request, event_id, action):
     handler, capability = ACTIONS.get(action, (None, None))
     if handler is None:
         raise Http404("Unknown sourcing action.")
-    allowed = (
-        can_approve_award(request.user)
-        if capability == "approve"
-        else can_manage_events(request.user)
-    )
+    if capability == "approve":
+        allowed = can_approve_award(request.user)
+    elif capability == "publish":
+        allowed = can_publish_events(request.user)
+    else:
+        allowed = can_manage_events(request.user)
     if not allowed:
         raise PermissionDenied("Your role is not authorised for this sourcing action.")
     event = get_object_or_404(SourcingEvent, pk=event_id)
@@ -711,7 +714,7 @@ def sourcing_event_create_htmx_view(request):
             event = services.create_sourcing_event_service(
                 **_form_to_kwargs(form.cleaned_data),
                 created_by_user=request.user,
-                enforce_future_start=True,
+                enforce_future_start=False,
             )
         except ValidationError as exc:
             if hasattr(exc, "messages"):

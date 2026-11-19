@@ -274,6 +274,7 @@ class Command(BaseCommand):
 
         # ── 8. Requisition ────────────────────────────────────────────────────
         from apps.requisitions.models import PurchaseRequisition
+        from apps.requisitions.services import approve_purchase_requisition_service
         pr = PurchaseRequisition.objects.filter(title="Enterprise Core Routers Upgrade", requester=requester).first()
         if not pr:
             pr = create_purchase_requisition_service(
@@ -287,6 +288,10 @@ class Command(BaseCommand):
                 ],
             )
             submit_purchase_requisition_service(requisition=pr, user=requester)
+            # Step 1: Dept Approver approval
+            approve_purchase_requisition_service(requisition=pr, approver=approver, comments="Step 1 approved.")
+            # Step 2: Proc Manager approval -> status becomes APPROVED
+            approve_purchase_requisition_service(requisition=pr, approver=proc_mgr, comments="Final step approved.")
 
         # ── 9. RFQ with 3 Bids ────────────────────────────────────────────────
         rfq = SourcingEvent.objects.filter(title="RFQ — Core Network Infrastructure Upgrade").first()

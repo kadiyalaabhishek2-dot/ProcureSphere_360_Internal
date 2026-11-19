@@ -48,13 +48,12 @@ class CanManageSupplierInvoice(BasePermission):
 
         # Vendors cannot pay, run match, create line-item invoices via internal endpoint, or access match exceptions
         if is_vendor:
-            basename = getattr(view, "basename", "")
-            action = getattr(view, "action", "")
-            if "exception" in basename or "exception" in action:
+            basename = getattr(view, "basename", "") or ""
+            action = getattr(view, "action", "") or ""
+            view_name = view.__class__.__name__
+            if "exception" in basename or "exception" in action or "MatchException" in view_name:
                 return False
-            if action == "create_invoice":
-                return False
-            if action in ["pay_invoice", "pay", "run_match", "run_3_way_match"]:
+            if action in ["create_invoice", "pay_invoice", "pay", "run_match", "run_3_way_match"]:
                 return False
             if request.method in SAFE_METHODS:
                 return True
@@ -82,14 +81,24 @@ class CanManageSupplierInvoice(BasePermission):
         if getattr(view, "action", None) in ["run_match", "run_3_way_match"]:
             return role_code in [Role.SUPER_ADMIN, Role.FINANCE_AP, "SUPER_ADMIN", "FINANCE_AP"]
 
-        # Internal read-only roles on invoices per RBAC matrix (Proc Exec, Proc Mgr, Stores Receiver, Auditor)
+        # DEF-004 & DEF-005: Procurement Executives and Procurement Managers are permitted to create invoices
+        # (POST /api/v1/invoices/) and perform safe reads, while payment and exception resolution remain restricted.
         if role_code in [
             Role.PROC_EXEC,
             Role.PROC_MGR,
-            Role.STORES_RECEIVER,
-            Role.AUDITOR,
             "PROC_EXEC",
             "PROC_MGR",
+        ]:
+            if request.method in SAFE_METHODS:
+                return True
+            if request.method == "POST" and getattr(view, "action", None) in ["create", None]:
+                return True
+            return False
+
+        # Internal read-only roles on invoices per RBAC matrix (Stores Receiver, Auditor)
+        if role_code in [
+            Role.STORES_RECEIVER,
+            Role.AUDITOR,
             "STORES_RECEIVER",
             "AUDITOR",
         ]:
@@ -135,10 +144,18 @@ class CanManageSupplierInvoice(BasePermission):
         if role_code in [
             Role.PROC_EXEC,
             Role.PROC_MGR,
-            Role.STORES_RECEIVER,
-            Role.AUDITOR,
             "PROC_EXEC",
             "PROC_MGR",
+        ]:
+            if request.method in SAFE_METHODS:
+                return True
+            if request.method == "POST":
+                return True
+            return False
+
+        if role_code in [
+            Role.STORES_RECEIVER,
+            Role.AUDITOR,
             "STORES_RECEIVER",
             "AUDITOR",
         ]:
@@ -531,10 +548,26 @@ class SupplierInvoiceViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"], url_path="pay")
     def pay_invoice(self, request, pk=None):
+        try:
+            data = request.data
+        except Exception as parse_err:
+            return Response(
+                {
+                    "error": {
+                        "code": "VALIDATION_ERROR",
+                        "message": "Malformed JSON payload in request body.",
+                        "details": str(parse_err),
+                    }
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         invoice = self.get_object()
-        payment_reference = request.data.get("payment_reference")
-        payment_method = request.data.get("payment_method", "ACH_TRANSFER")
-        payment_date = request.data.get("payment_date")
+        payment_reference = data.get("payment_reference") if isinstance(data, dict) else None
+        payment_method = (
+            data.get("payment_method", "ACH_TRANSFER") if isinstance(data, dict) else "ACH_TRANSFER"
+        )
+        payment_date = data.get("payment_date") if isinstance(data, dict) else None
         try:
             paid_invoice = mark_invoice_paid_service(
                 invoice=invoice,

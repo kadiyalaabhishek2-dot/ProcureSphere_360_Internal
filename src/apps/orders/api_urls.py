@@ -49,8 +49,8 @@ class CanManagePurchaseOrder(BasePermission):
         role_code = getattr(request.user, "role_code", None) or (
             request.user.role.code if getattr(request.user, "role", None) else None
         )
-        if not request.user.is_superuser and role_code == Role.STORES_RECEIVER:
-            return False
+        if role_code == Role.STORES_RECEIVER:
+            return request.method in SAFE_METHODS
 
         if role_code == Role.AUDITOR:
             return request.method in SAFE_METHODS
@@ -508,9 +508,48 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
                 )
             raise
 
+    def get_object(self):
+        lookup_url_kwarg = self.lookup_url_kwarg or self.lookup_field
+        lookup_val = self.kwargs.get(lookup_url_kwarg)
+
+        import uuid
+        is_valid_uuid = False
+        try:
+            uuid.UUID(str(lookup_val))
+            is_valid_uuid = True
+        except (ValueError, AttributeError, TypeError):
+            is_valid_uuid = False
+
+        from django.db.models import Q
+        base_qs = scope_purchase_orders_queryset(self.queryset, self.request.user)
+        if is_valid_uuid:
+            obj = base_qs.filter(Q(pk=lookup_val) | Q(po_number__iexact=str(lookup_val))).first()
+        else:
+            obj = base_qs.filter(po_number__iexact=str(lookup_val)).first()
+
+        if not obj:
+            unrestricted_qs = PurchaseOrder.objects.all()
+            if is_valid_uuid:
+                unrestricted_obj = unrestricted_qs.filter(Q(pk=lookup_val) | Q(po_number__iexact=str(lookup_val))).first()
+            else:
+                unrestricted_obj = unrestricted_qs.filter(po_number__iexact=str(lookup_val)).first()
+
+            if unrestricted_obj:
+                from rest_framework.exceptions import PermissionDenied
+                raise PermissionDenied("You do not have permission to access this Purchase Order.")
+
+            from rest_framework.exceptions import NotFound
+            raise NotFound(f"Purchase Order '{lookup_val}' not found.")
+
+        self.check_object_permissions(self.request, obj)
+        return obj
+
     def get_queryset(self):
         user = self.request.user
         qs = scope_purchase_orders_queryset(self.queryset, user)
+
+        if getattr(self, "action", None) and self.action != "list":
+            return qs
 
         # Filter by search param
         search_query = self.request.query_params.get("search", "").strip()
@@ -845,8 +884,19 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path="issue")
     def issue(self, request, pk=None):
         """APPROVED -> ISSUED. Notifies the vendor and requester."""
-        base_qs = scope_purchase_orders_queryset(self.queryset, request.user)
-        po = get_object_or_404(base_qs, pk=pk)
+        # DEF-009: Standardize lookup through get_object() and enforce invalid transition check (HTTP 400 on DRAFT)
+        po = self.get_object()
+        if po.status != PurchaseOrder.STATUS_APPROVED:
+            return Response(
+                {
+                    "error": {
+                        "code": "INVALID_TRANSITION",
+                        "message": f"Cannot issue PO in status '{po.status}'. Must be APPROVED.",
+                        "details": {"status": [f"Cannot issue PO in status '{po.status}'. Must be APPROVED."]},
+                    }
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         return self._run_lifecycle_action(
             issue_purchase_order_service, po=po, actor=request.user
         )

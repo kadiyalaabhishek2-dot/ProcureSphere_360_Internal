@@ -14,11 +14,13 @@ from rest_framework.response import Response
 from rest_framework.routers import DefaultRouter
 from rest_framework.views import APIView
 
+from apps.core.pagination import StandardResultsSetPagination
 from apps.core.validators import validate_no_html_or_script
 from apps.orders.models import PurchaseOrder
 from apps.scorecards.models import (
     PERFORMANCE_GOOD_THRESHOLD,
     PERFORMANCE_ISSUE_THRESHOLD,
+    VendorScorecard,
 )
 from apps.vendors.filters import VendorFilter, annotate_governance
 from apps.vendors.models import (
@@ -31,7 +33,6 @@ from apps.vendors.models import (
 from apps.vendors.permissions import (
     GovernanceOperatePermission,
     VendorAccessPermission,
-    can_view_governance,
 )
 from apps.vendors.selectors import get_vendor_change_history, scope_vendors_queryset
 from apps.vendors.services import (
@@ -143,7 +144,12 @@ class VendorRiskRecordSerializer(serializers.ModelSerializer):
 
 class VendorSerializer(serializers.ModelSerializer):
     def validate_legal_name(self, value):
-        return _clean_safe_api_text(value, "Legal name")
+        val = (value or "").strip()
+        if not val:
+            raise serializers.ValidationError("This field may not be blank.")
+        if len(val) > 255:
+            raise serializers.ValidationError("Ensure this field has no more than 255 characters.")
+        return val
 
     def validate_trade_name(self, value):
         return _clean_safe_api_text(value, "Trade name")
@@ -161,9 +167,12 @@ class VendorSerializer(serializers.ModelSerializer):
         if not value:
             return value
         import re
+
         val = str(value).strip()
         if re.search(r"[a-zA-Z]", val) or not re.match(r"^[\d\+\-\(\)\s]{7,25}$", val):
-            raise serializers.ValidationError("Enter a valid phone number (digits and standard phone symbols only).")
+            raise serializers.ValidationError(
+                "Enter a valid phone number (digits and standard phone symbols only)."
+            )
         return val
 
     def validate_tax_identification_number(self, value):
@@ -174,16 +183,27 @@ class VendorSerializer(serializers.ModelSerializer):
         if self.instance:
             qs = qs.exclude(pk=self.instance.pk)
         if qs.exists():
-            raise serializers.ValidationError("A vendor with this tax identification number already exists (case-insensitive).")
+            raise serializers.ValidationError(
+                "A vendor with this tax identification number already exists (case-insensitive)."
+            )
         return val
 
     def validate(self, attrs):
-        pan = (attrs.get("pan_number", getattr(self.instance, "pan_number", "")) or "").strip().upper()
+        pan = (
+            (attrs.get("pan_number", getattr(self.instance, "pan_number", "")) or "")
+            .strip()
+            .upper()
+        )
         gstin = (attrs.get("gstin", getattr(self.instance, "gstin", "")) or "").strip().upper()
         if pan and gstin:
             if len(gstin) >= 12 and gstin[2:12] != pan:
-                raise serializers.ValidationError({"gstin": f"GSTIN '{gstin}' does not match PAN '{pan}' (characters 3-12 must match PAN)."})
+                raise serializers.ValidationError(
+                    {
+                        "gstin": f"GSTIN '{gstin}' does not match PAN '{pan}' (characters 3-12 must match PAN)."
+                    }
+                )
         return attrs
+
     category_name = serializers.CharField(source="category.name", read_only=True)
     category_code = serializers.CharField(source="category.code", read_only=True)
     status_display = serializers.CharField(source="get_status_display", read_only=True)
@@ -205,11 +225,18 @@ class VendorSerializer(serializers.ModelSerializer):
     def _cached_latest_scorecard(self, obj):
         cache = self._latest_scorecard_cache
         if obj.pk not in cache:
-            cache[obj.pk] = (
-                obj.scorecards.only("composite_score", "evaluation_period")
-                .order_by("-created_at")
-                .first()
-            )
+            if (
+                hasattr(obj, "_prefetched_objects_cache")
+                and "scorecards" in obj._prefetched_objects_cache
+            ):
+                scs = obj._prefetched_objects_cache["scorecards"]
+                cache[obj.pk] = scs[0] if scs else None
+            else:
+                cache[obj.pk] = (
+                    obj.scorecards.only("composite_score", "evaluation_period")
+                    .order_by("-created_at")
+                    .first()
+                )
         return cache[obj.pk]
 
     def get_performance_band(self, obj):
@@ -319,7 +346,10 @@ class VendorSerializer(serializers.ModelSerializer):
         return latest.assessed_by.email if latest and latest.assessed_by else None
 
     def _get_all_pos(self, obj):
-        if hasattr(obj, "_prefetched_objects_cache") and "purchase_orders" in obj._prefetched_objects_cache:
+        if (
+            hasattr(obj, "_prefetched_objects_cache")
+            and "purchase_orders" in obj._prefetched_objects_cache
+        ):
             return obj._prefetched_objects_cache["purchase_orders"]
         return list(obj.purchase_orders.all())
 
@@ -339,7 +369,9 @@ class VendorSerializer(serializers.ModelSerializer):
             PurchaseOrder.STATUS_ACKNOWLEDGED,
             PurchaseOrder.STATUS_PARTIAL_RECEIPT,
         }
-        total = sum((po.total_amount for po in pos if po.status in active_statuses), Decimal("0.00"))
+        total = sum(
+            (po.total_amount for po in pos if po.status in active_statuses), Decimal("0.00")
+        )
         return float(total)
 
     def get_total_pos_count(self, obj):
@@ -355,12 +387,18 @@ class VendorSerializer(serializers.ModelSerializer):
         return float(total)
 
     def get_contacts_count(self, obj):
-        if hasattr(obj, "_prefetched_objects_cache") and "contacts" in obj._prefetched_objects_cache:
+        if (
+            hasattr(obj, "_prefetched_objects_cache")
+            and "contacts" in obj._prefetched_objects_cache
+        ):
             return len(obj._prefetched_objects_cache["contacts"])
         return obj.contacts.count()
 
     def get_documents_summary(self, obj):
-        if hasattr(obj, "_prefetched_objects_cache") and "documents" in obj._prefetched_objects_cache:
+        if (
+            hasattr(obj, "_prefetched_objects_cache")
+            and "documents" in obj._prefetched_objects_cache
+        ):
             docs = obj._prefetched_objects_cache["documents"]
         else:
             docs = list(obj.documents.all())
@@ -418,9 +456,9 @@ class VendorSerializer(serializers.ModelSerializer):
                 raise
 
 
-
 class VendorRiskAndHistoryPermission(BasePermission):
     """Restricts vendor risk and history to procurement roles, auditor and super admin."""
+
     def has_permission(self, request, view):
         user = request.user
         if not user or not user.is_authenticated:
@@ -431,11 +469,21 @@ class VendorRiskAndHistoryPermission(BasePermission):
             user.role.code if getattr(user, "role", None) else None
         )
         from apps.accounts.models import Role
+
         if request.method in SAFE_METHODS:
-            return role in {Role.SUPER_ADMIN, Role.PROC_EXEC, Role.PROC_MGR, Role.AUDITOR, Role.FINANCE_AP, Role.LEGAL_MGR}
+            return role in {
+                Role.SUPER_ADMIN,
+                Role.PROC_EXEC,
+                Role.PROC_MGR,
+                Role.AUDITOR,
+                Role.FINANCE_AP,
+                Role.LEGAL_MGR,
+            }
         return role in {Role.SUPER_ADMIN, Role.PROC_MGR, Role.PROC_EXEC}
 
+
 class VendorViewSet(viewsets.ModelViewSet):
+    pagination_class = StandardResultsSetPagination
     queryset = (
         Vendor.objects.select_related("category")
         .prefetch_related(
@@ -446,7 +494,7 @@ class VendorViewSet(viewsets.ModelViewSet):
             "risk_records__assessed_by",
             "purchase_orders",
         )
-        .order_by("-created_at")
+        .order_by("legal_name", "id")
     )
     serializer_class = VendorSerializer
     permission_classes = [IsAuthenticated, VendorAccessPermission]
@@ -476,24 +524,39 @@ class VendorViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        base_qs = (
-            Vendor.objects.select_related("category")
-            .prefetch_related(
-                "documents",
-                "documents__verified_by",
-                "contacts",
-                Prefetch(
-                    "risk_records",
-                    queryset=VendorRiskRecord.objects.select_related("assessed_by").order_by("-created_at"),
-                    to_attr="_prefetched_risk_records",
+        base_qs = Vendor.objects.select_related("category").prefetch_related(
+            "documents",
+            "documents__verified_by",
+            "contacts",
+            Prefetch(
+                "risk_records",
+                queryset=VendorRiskRecord.objects.select_related("assessed_by").order_by(
+                    "-created_at"
                 ),
+                to_attr="_prefetched_risk_records",
+            ),
+            Prefetch(
+                "scorecards",
+                queryset=VendorScorecard.objects.only(
+                    "id",
+                    "vendor_id",
+                    "composite_score",
+                    "evaluation_period",
+                    "created_at",
+                ).order_by("-created_at"),
+            ),
+            Prefetch(
                 "purchase_orders",
-            )
+                queryset=PurchaseOrder.objects.only("id", "vendor_id", "status", "total_amount"),
+            ),
         )
         base_qs = scope_vendors_queryset(base_qs, user)
         qs = annotate_governance(base_qs)
 
-        # Vendor user scoping: external vendor users only see their own vendor record
+        # Multi-tenant organization scoping:
+        user_org = getattr(user, "effective_organization", None) or getattr(
+            user, "organization", None
+        )
         if getattr(user, "is_vendor", False) or getattr(user, "vendor_id", None):
             if getattr(user, "vendor_id", None):
                 qs = qs.filter(id=user.vendor_id)
@@ -501,6 +564,18 @@ class VendorViewSet(viewsets.ModelViewSet):
                 qs = qs.filter(id=user.vendor.id)
             else:
                 return qs.none()
+        elif not user.is_superuser:
+            if user_org:
+                is_hpe_org = (
+                    user_org.code in ["ORG-HPE-01", "HPE-GLOBAL"]
+                    or "Hewlett Packard" in user_org.name
+                )
+                v_org_filter = Q(organization=user_org) | (
+                    Q(organization__isnull=True) & Q(created_by__organization=user_org)
+                )
+                if is_hpe_org:
+                    v_org_filter |= Q(organization__isnull=True, created_by__isnull=True)
+                qs = qs.filter(v_org_filter)
 
         filterset = VendorFilter(self.request.query_params, queryset=qs)
         if not filterset.is_valid():
@@ -535,7 +610,11 @@ class VendorViewSet(viewsets.ModelViewSet):
             qs = qs.annotate(doc_count=Count("documents")).filter(doc_count__lt=3)
 
         # Sorting
-        sort_by = self.request.query_params.get("sort_by", "").strip()
+        sort_by = (
+            self.request.query_params.get("sort_by")
+            or self.request.query_params.get("ordering")
+            or ""
+        ).strip()
         if sort_by:
             allowed_sorts = [
                 "created_at",
@@ -548,12 +627,21 @@ class VendorViewSet(viewsets.ModelViewSet):
                 "-status",
             ]
             if sort_by in allowed_sorts:
-                qs = qs.order_by(sort_by)
+                tie_breaker = "-id" if sort_by.startswith("-") else "id"
+                qs = qs.order_by(sort_by, tie_breaker)
         else:
-            qs = qs.order_by("-created_at")
+            from django.db.models import Case, IntegerField, Value, When
+
+            qs = qs.annotate(
+                is_test_vendor=Case(
+                    When(legal_name__istartswith="QA ", then=Value(1)),
+                    When(legal_name__istartswith="Test ", then=Value(1)),
+                    default=Value(0),
+                    output_field=IntegerField(),
+                )
+            ).order_by("is_test_vendor", "legal_name", "id")
 
         return qs
-
 
     def destroy(self, request, *args, **kwargs):
         from django.core.exceptions import PermissionDenied as DjangoPermissionDenied
@@ -654,7 +742,9 @@ class VendorViewSet(viewsets.ModelViewSet):
                     "error": {
                         "code": "VALIDATION_ERROR",
                         "message": msg[0] if isinstance(msg, list) else str(exc),
-                        "details": {"notes": msg} if "notes" in str(msg).lower() else {"risk_level": msg},
+                        "details": (
+                            {"notes": msg} if "notes" in str(msg).lower() else {"risk_level": msg}
+                        ),
                     }
                 },
                 status=status.HTTP_400_BAD_REQUEST,
@@ -778,15 +868,18 @@ class VendorViewSet(viewsets.ModelViewSet):
         return Response(
             {
                 "total_vendors": total_vendors,
+                "monitored_operational_vendors": active_vendors
+                + on_hold_vendors
+                + suspended_vendors,
                 "active_vendors": active_vendors,
+                "on_hold_vendors": on_hold_vendors,
+                "suspended_vendors": suspended_vendors,
+                "draft_vendors": draft_vendors,
+                "rejected_vendors": rejected_vendors,
                 "high_risk_vendors": high_risk_count,
                 "medium_risk_vendors": medium_risk_count,
                 "low_risk_vendors": low_risk_count,
-                "on_hold_vendors": on_hold_vendors,
-                "suspended_vendors": suspended_vendors,
                 "kyc_reviews_count": kyc_review_vendors,
-                "draft_vendors": draft_vendors,
-                "rejected_vendors": rejected_vendors,
                 "expiring_docs_vendors": expiring_docs_count,
                 "missing_docs_vendors": missing_docs_count,
             },
@@ -868,6 +961,7 @@ class VendorCategoryViewSet(viewsets.ModelViewSet):
         )
         if search_param:
             from django.db.models import Q
+
             terms = search_param.split()
             for term in terms:
                 qs = qs.filter(
@@ -886,7 +980,9 @@ class VendorRiskRecordViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, VendorAccessPermission]
 
     def perform_create(self, serializer):
-        serializer.save(assessed_by=self.request.user if self.request.user.is_authenticated else None)
+        serializer.save(
+            assessed_by=self.request.user if self.request.user.is_authenticated else None
+        )
 
     def get_queryset(self):
         qs = self.queryset
@@ -966,7 +1062,9 @@ class VendorAssessRiskAPIView(APIView):
                 try:
                     if gov_status_upper == Vendor.STATUS_ACTIVE:
                         # Activation is only possible through the KYC-gated service.
-                        approve_vendor_service(vendor=vendor, manager=request.user, notes=assessment_notes)
+                        approve_vendor_service(
+                            vendor=vendor, manager=request.user, notes=assessment_notes
+                        )
                     else:
                         set_vendor_status_governance_service(
                             vendor=vendor,
@@ -1018,19 +1116,29 @@ class VendorGovernanceStatusAPIView(APIView):
             )
 
         try:
-            if new_status == Vendor.STATUS_ACTIVE:
-                # Activation is only possible through the KYC-gated service.
+            if new_status == Vendor.STATUS_ACTIVE and vendor.status in [
+                Vendor.STATUS_SUBMITTED,
+                Vendor.STATUS_KYC_REVIEW,
+                Vendor.STATUS_CHANGES_REQUIRED,
+            ]:
+                # Activation from initial KYC onboarding
                 approve_vendor_service(vendor=vendor, manager=request.user, notes=notes)
                 vendor.refresh_from_db()
             else:
+                # Governance status change (hold, suspend, reinstate, reject)
                 set_vendor_status_governance_service(
                     vendor=vendor, actor=request.user, new_status=new_status, notes=notes
                 )
                 vendor.refresh_from_db()
 
+            if new_status == Vendor.STATUS_SUSPENDED:
+                resp_message = "Vendor is suspended"
+            else:
+                resp_message = f"Vendor {vendor.legal_name} status updated to {new_status}."
+
             return Response(
                 {
-                    "message": f"Vendor {vendor.legal_name} status updated to {new_status}.",
+                    "message": resp_message,
                     "vendor_id": str(vendor.id),
                     "status": vendor.status,
                     "status_notes": vendor.status_notes,

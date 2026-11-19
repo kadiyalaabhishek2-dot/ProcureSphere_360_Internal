@@ -97,6 +97,8 @@ DJANGO_APPS = [
 
     "django.contrib.staticfiles",
 
+    "django.contrib.humanize",
+
 ]
 
 
@@ -170,6 +172,8 @@ MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
 
     "whitenoise.middleware.WhiteNoiseMiddleware",
+
+    "django.middleware.gzip.GZipMiddleware",
 
     "corsheaders.middleware.CorsMiddleware",
 
@@ -402,7 +406,7 @@ REST_FRAMEWORK = {
 
     ),
 
-    "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
+    "DEFAULT_PAGINATION_CLASS": "apps.core.pagination.StandardResultsSetPagination",
 
     "PAGE_SIZE": 25,
 

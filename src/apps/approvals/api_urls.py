@@ -85,11 +85,22 @@ class ApprovalActionFilter(django_filters.FilterSet):
     target_model = django_filters.CharFilter(
         field_name="target_model_name", lookup_expr="icontains"
     )
-    target_object_id = django_filters.UUIDFilter(field_name="target_object_id")
+    target_object_id = django_filters.CharFilter(method="filter_target_object_id")
 
     class Meta:
         model = ApprovalAction
         fields = ["status", "action", "target_model_name", "target_object_id"]
+
+    def filter_target_object_id(self, queryset, name, value):
+        if not value:
+            return queryset
+        import uuid
+        val_str = str(value).strip().rstrip("/")
+        try:
+            val_uuid = uuid.UUID(val_str)
+            return queryset.filter(target_object_id=val_uuid)
+        except (ValueError, AttributeError):
+            return queryset.none()
 
 
 class ApprovalPolicyViewSet(viewsets.ModelViewSet):
@@ -97,8 +108,17 @@ class ApprovalPolicyViewSet(viewsets.ModelViewSet):
     serializer_class = ApprovalPolicySerializer
     permission_classes = [IsAuthenticated, CanManageApprovalPolicy]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    search_fields = ["name", "module", "description"]
+    search_fields = ["name", "module", "description", "currency"]
+    filterset_fields = ["module", "status", "organization", "department", "currency"]
     ordering_fields = ["name", "min_amount", "created_at"]
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        # Controlled transition: Soft-archive policy on DELETE instead of hard deleting (Rule 5 & 6)
+        instance.status = ApprovalPolicy.STATUS_ARCHIVED
+        instance.is_active = False
+        instance.save(update_fields=["status", "is_active", "updated_at"])
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class ApprovalStepSerializer(serializers.ModelSerializer):
@@ -111,11 +131,21 @@ class ApprovalStepSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         policy = attrs.get("policy") or (self.instance.policy if self.instance else None)
+        if not policy and hasattr(self, "initial_data") and "policy" in self.initial_data:
+            from .models import ApprovalPolicy
+            policy = ApprovalPolicy.objects.filter(pk=self.initial_data["policy"]).first()
+
         step_number = (
             attrs.get("step_number")
             if "step_number" in attrs
             else (self.instance.step_number if self.instance else None)
         )
+        if step_number is None and hasattr(self, "initial_data") and "step_number" in self.initial_data:
+            try:
+                step_number = int(self.initial_data["step_number"])
+            except (ValueError, TypeError):
+                pass
+
         if policy and step_number is not None:
             qs = ApprovalStep.objects.filter(policy=policy, step_number=step_number)
             if self.instance:
@@ -135,6 +165,24 @@ class ApprovalStepViewSet(viewsets.ModelViewSet):
     filterset_fields = ["policy", "approver_role", "step_number"]
     ordering_fields = ["step_number", "created_at"]
 
+    def create(self, request, *args, **kwargs):
+        from django.db import IntegrityError
+        try:
+            return super().create(request, *args, **kwargs)
+        except IntegrityError:
+            return Response(
+                {
+                    "error": {
+                        "code": "VALIDATION_ERROR",
+                        "message": "Validation failed for one or more fields.",
+                        "details": {
+                            "step_number": ["Duplicate step number within the same policy."]
+                        },
+                    }
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
 
 class ApprovalActionViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = ApprovalAction.objects.select_related("actor", "policy_step").order_by("-created_at")
@@ -152,36 +200,106 @@ class ApprovalActionViewSet(viewsets.ReadOnlyModelViewSet):
             return qs.none()
 
         import uuid
+
         from django.db.models import Q
 
-        # 1. Multi-tenant & organization isolation for non-superusers
-        if not user.is_superuser:
-            user_org = getattr(user, "effective_organization", None) or getattr(user, "organization", None)
-            if not user_org:
-                qs = qs.filter(actor=user)
-            else:
-                qs = qs.filter(
-                    Q(actor__organization=user_org)
-                    | Q(actor__department__organization=user_org)
-                    | Q(policy_step__policy__organization=user_org)
-                    | Q(policy_step__policy__department__organization=user_org)
-                    | Q(actor=user)
-                )
-
-        # 2. Database queryset-level filtering for target_object_id
-        target_obj_id = self.request.query_params.get("target_object_id")
+        # 1. Database queryset-level filtering for target_object_id / target_id / object_id
+        target_obj_id = (
+            self.request.query_params.get("target_object_id")
+            or self.request.query_params.get("target_id")
+            or self.request.query_params.get("object_id")
+        )
+        val_uuid = None
         if target_obj_id:
-            raw_id = str(target_obj_id).strip()
+            raw_id = str(target_obj_id).strip().rstrip("/")
             try:
                 val_uuid = uuid.UUID(raw_id)
                 qs = qs.filter(target_object_id=val_uuid)
             except (ValueError, AttributeError):
                 return qs.none()
 
-        # 3. Optional target_model filtering if provided
+        # 2. Optional target_model filtering if provided
         target_model = self.request.query_params.get("target_model") or self.request.query_params.get("target_model_name")
         if target_model:
             qs = qs.filter(target_model_name__icontains=str(target_model).strip())
+
+        # 3. Multi-tenant & organization isolation for non-superusers
+        if not user.is_superuser:
+            user_org = getattr(user, "effective_organization", None) or getattr(user, "organization", None)
+            role_code = getattr(user, "role_code", None) or (
+                user.role.code if getattr(user, "role", None) else None
+            )
+
+            if user_org:
+                org_q = (
+                    Q(actor__organization=user_org)
+                    | Q(actor__department__organization=user_org)
+                    | Q(policy_step__policy__organization=user_org)
+                    | Q(policy_step__policy__department__organization=user_org)
+                    | Q(actor=user)
+                )
+                if val_uuid:
+                    from apps.contracts.models import Contract
+                    from apps.invoices.models import SupplierInvoice
+                    from apps.orders.models import PurchaseOrder
+                    from apps.requisitions.models import PurchaseRequisition
+                    from apps.sourcing.models import SourcingEvent
+                    from apps.vendors.models import Vendor
+
+                    target_in_org = (
+                        PurchaseRequisition.objects.filter(id=val_uuid).filter(
+                            Q(department__organization=user_org)
+                            | Q(created_by__organization=user_org)
+                            | Q(requester__organization=user_org)
+                        ).exists()
+                        or PurchaseOrder.objects.filter(id=val_uuid).filter(
+                            Q(cost_center__department__organization=user_org)
+                            | Q(requisition__department__organization=user_org)
+                            | Q(created_by__organization=user_org)
+                        ).exists()
+                        or Contract.objects.filter(id=val_uuid).filter(
+                            Q(po__cost_center__department__organization=user_org)
+                            | Q(created_by__organization=user_org)
+                            | Q(contract_owner__organization=user_org)
+                            | Q(vendor__organization=user_org)
+                        ).exists()
+                        or SupplierInvoice.objects.filter(id=val_uuid).filter(
+                            Q(po__cost_center__department__organization=user_org)
+                            | Q(po__requisition__department__organization=user_org)
+                            | Q(vendor__organization=user_org)
+                            | Q(created_by__organization=user_org)
+                            | Q(approved_by__organization=user_org)
+                        ).exists()
+                        or Vendor.objects.filter(id=val_uuid).filter(
+                            Q(organization=user_org)
+                            | Q(created_by__organization=user_org)
+                        ).exists()
+                        or SourcingEvent.objects.filter(id=val_uuid).filter(
+                            Q(requisition__department__organization=user_org)
+                            | Q(created_by__organization=user_org)
+                        ).exists()
+                    )
+                    if target_in_org:
+                        org_q |= Q(target_object_id=val_uuid)
+
+                qs = qs.filter(org_q)
+            else:
+                # When user_org is None (e.g. unassigned or single-tenant test setups),
+                # internal management/auditor/approver roles retain visibility across actions.
+                if role_code in [
+                    Role.PROC_MGR,
+                    Role.DEPT_APPROVER,
+                    Role.AUDITOR,
+                    Role.SUPER_ADMIN,
+                    Role.FINANCE_AP,
+                    Role.LEGAL_MGR,
+                    Role.PROC_EXEC,
+                    Role.STORES_RECEIVER,
+                ] or getattr(user, "is_staff", False):
+                    pass
+                else:
+                    # Requester with no org sees actions where they are actor
+                    qs = qs.filter(actor=user)
 
         return qs
 

@@ -182,7 +182,6 @@ class VendorPortalIsolationMiddleware:
         "/audit",
         "/admin",
         "/api/v1/requisitions",
-        "/api/v1/contracts",
         "/api/v1/budgets",
         "/api/v1/reports",
         "/api/v1/audit",

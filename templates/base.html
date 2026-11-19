@@ -12,6 +12,10 @@
     <link rel="icon" type="image/webp" href="{% static 'icons/favicon.webp' %}">
     <link rel="apple-touch-icon" href="{% static 'icons/apple-touch-icon.webp' %}">
     <link rel="manifest" href="{% static 'icons/site.webmanifest' %}">
+    <!-- CDN Preconnects for Faster Handshakes -->
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+    <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
+    <link rel="preconnect" href="https://unpkg.com" crossorigin>
     <!-- Bootstrap 5 CSS -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <!-- Font Awesome -->
@@ -25,28 +29,124 @@
     <!-- Custom Design System Styles -->
     <link href="/static/css/style.css?v=ps_checkbox_focus_v1" rel="stylesheet">
     <!-- HTMX Library -->
-    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
-    <!-- Chart.js 4.4 JS -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.10/dist/htmx.min.js"></script>
+    <!-- Chart.js 4.4 JS (deferred to prevent render-blocking) -->
+    <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <script>
         // Forward navigation & bfcache anti-tamper guard: if user backed out / exited, block dashboard restoration
         (function() {
             try {
-                if (sessionStorage.getItem('ps_is_internal_navigation') === 'true') {
-                    sessionStorage.removeItem('ps_is_internal_navigation');
-                    sessionStorage.removeItem('ps360_user_signed_out');
-                    localStorage.removeItem('ps360_user_signed_out');
-                    document.cookie = "ps360_user_signed_out=; path=/; max-age=0";
-                    document.cookie = "ps360_just_logged_out=; path=/; max-age=0";
-                } else if (sessionStorage.getItem('ps360_user_signed_out') === 'true' ||
-                    localStorage.getItem('ps360_user_signed_out') ||
-                    document.cookie.indexOf('ps360_user_signed_out=1') !== -1) {
-                    window.location.replace('/login/?reason=signed_out');
-                }
+                var hasSubpageHistory = (
+                    sessionStorage.getItem('ps_visited_subpage') === 'true' ||
+                    sessionStorage.getItem('ps360_active_subpage') ||
+                    sessionStorage.getItem('ps_last_subpage_path') ||
+                    sessionStorage.getItem('ps_is_internal_navigation') === 'true'
+                );
+                sessionStorage.removeItem('ps_is_internal_navigation');
+                sessionStorage.removeItem('ps360_user_signed_out');
+                localStorage.removeItem('ps360_user_signed_out');
+                document.cookie = "ps360_user_signed_out=; path=/; max-age=0; SameSite=Lax";
+                document.cookie = "ps360_just_logged_out=; path=/; max-age=0; SameSite=Lax";
             } catch(e) {}
         })();
     </script>
     <style>
+        /* ========================================================================= */
+        /* UNIVERSAL ENTERPRISE PAGINATION DESIGN SYSTEM                             */
+        /* Consistent, accessible, modern pagination applied across all modules      */
+        /* ========================================================================= */
+        .pagination {
+            display: inline-flex !important;
+            align-items: center !important;
+            gap: 5px !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            list-style: none !important;
+        }
+
+        .pagination .page-item {
+            margin: 0 !important;
+        }
+
+        .pagination .page-link {
+            display: inline-flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            min-width: 36px !important;
+            height: 36px !important;
+            padding: 0 12px !important;
+            font-size: 0.8125rem !important; /* 13px */
+            font-weight: 500 !important;
+            color: #475569 !important; /* Slate 600 */
+            background-color: #FFFFFF !important;
+            border: 1px solid #E2E8F0 !important; /* Slate 200 */
+            border-radius: 8px !important;
+            text-decoration: none !important;
+            transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1) !important;
+            user-select: none !important;
+            line-height: 1 !important;
+        }
+
+        .pagination .page-link:hover:not(.disabled):not(:disabled) {
+            color: #1D4ED8 !important; /* Blue 700 */
+            background-color: #EFF6FF !important; /* Blue 50 */
+            border-color: #BFDBFE !important; /* Blue 200 */
+            transform: translateY(-1px) !important;
+            box-shadow: 0 2px 4px rgba(37, 99, 235, 0.08) !important;
+        }
+
+        .pagination .page-link:focus,
+        .pagination .page-link:focus-visible {
+            outline: none !important;
+            border-color: #3B82F6 !important;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2) !important;
+        }
+
+        /* Active Page State */
+        .pagination .page-item.active .page-link,
+        .pagination .page-link.active {
+            color: #FFFFFF !important;
+            background: linear-gradient(135deg, #2563EB 0%, #1D4ED8 100%) !important;
+            border-color: #1D4ED8 !important;
+            font-weight: 600 !important;
+            box-shadow: 0 2px 6px rgba(37, 99, 235, 0.3) !important;
+            transform: none !important;
+            cursor: default !important;
+            pointer-events: none !important;
+        }
+
+        /* Disabled State */
+        .pagination .page-item.disabled .page-link,
+        .pagination .page-link:disabled,
+        .pagination .page-link.disabled {
+            color: #94A3B8 !important; /* Slate 400 */
+            background-color: #F8FAFC !important; /* Slate 50 */
+            border-color: #E2E8F0 !important;
+            opacity: 0.65 !important;
+            cursor: not-allowed !important;
+            pointer-events: none !important;
+            box-shadow: none !important;
+            transform: none !important;
+        }
+
+        /* Ellipsis / Separator */
+        .pagination .page-item.disabled .page-link.ellipsis,
+        .pagination .page-link.ellipsis {
+            border-color: transparent !important;
+            background-color: transparent !important;
+            color: #64748B !important;
+            font-size: 1rem !important;
+            min-width: 24px !important;
+            padding: 0 4px !important;
+            letter-spacing: 2px !important;
+        }
+
+        /* Card footer wrapper styling */
+        .card-footer:has(.pagination) {
+            background-color: #FFFFFF !important;
+            border-top: 1px solid #E2E8F0 !important;
+        }
+
         /* ========================================================================= */
         /* GLOBAL LIGHT BLUE ENTERPRISE NAVBAR & SIDEBAR THEME                       */
         /* Enforced across ALL dashboards and role-based portals globally            */
@@ -1424,7 +1524,7 @@
     <!-- Bootstrap JS Bundle -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     <!-- Custom Application JS -->
-    <script src="/static/js/app.js?v=ps_nav_v17"></script>
+    <script src="/static/js/app.js?v=ps_nav_v18"></script>
     {% if request.user.is_authenticated %}
     <script>
       window.PS360_SESSION_CONFIG = {

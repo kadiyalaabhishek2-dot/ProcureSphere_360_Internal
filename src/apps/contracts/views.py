@@ -131,7 +131,19 @@ def _can_view_contract(user, contract):
     return False
 
 
-def _resolve_contract_layout(user, role_code):
+def _resolve_contract_layout(user, role_code, request=None):
+    if request:
+        from_param = request.GET.get("from", "").strip().lower()
+        referer = request.headers.get("referer", "").lower()
+        if from_param == "manager" or "/manager/" in referer:
+            if getattr(user, "is_superuser", False) or role_code in [
+                Role.SUPER_ADMIN,
+                "SUPER_ADMIN",
+                "ADMIN",
+                Role.PROC_MGR,
+                "PROC_MGR",
+            ]:
+                return "manager/base_manager.html"
     if getattr(user, "is_superuser", False) or role_code in [
         Role.SUPER_ADMIN,
         "SUPER_ADMIN",
@@ -186,7 +198,7 @@ def list_view(request):
         "search_query": search_query,
         "querystring": query_params.urlencode(),
         "statuses": Contract.STATUS_CHOICES,
-        "base_layout": _resolve_contract_layout(request.user, role_code),
+        "base_layout": _resolve_contract_layout(request.user, role_code, request=request),
         "role_code": role_code,
     }
     return render(request, "pages/contracts/list.html", context)
@@ -240,7 +252,7 @@ def create_view(request):
     else:
         form = ContractCreateForm()
 
-    base_layout = _resolve_contract_layout(request.user, role_code)
+    base_layout = _resolve_contract_layout(request.user, role_code, request=request)
     return render(
         request,
         "pages/contracts/create.html",
@@ -313,7 +325,7 @@ def detail_view(request, contract_id):
         "can_manage_contracts": can_manage_contracts,
         "can_manage_sla": can_manage_sla,
         "can_submit_legal": can_submit_legal,
-        "base_layout": _resolve_contract_layout(request.user, role_code),
+        "base_layout": _resolve_contract_layout(request.user, role_code, request=request),
         "role_code": role_code,
     }
     return render(request, "pages/contracts/detail.html", context)

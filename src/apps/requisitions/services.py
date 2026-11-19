@@ -433,13 +433,15 @@ def approve_purchase_requisition_service(
 
         # Validate approver authorization for this step (SMK-AP-005)
         is_authorized = False
-        if approver.is_superuser:
+        approver_role_code = getattr(approver, "role_code", None) or (
+            approver.role.code if hasattr(approver, "role") and approver.role else None
+        )
+        if approver.is_superuser or approver_role_code == Role.SUPER_ADMIN:
             is_authorized = True
         elif specific_approver:
             if approver == effective_approver or approver == specific_approver:
                 is_authorized = True
         else:
-            approver_role_code = getattr(approver.role, "code", None)
             if (getattr(approver, "role_id", None) == required_role.id) or (approver_role_code == required_role.code):
                 if required_role.code == Role.DEPT_APPROVER:
                     req_dept = requisition.department or (requisition.cost_center.department if requisition.cost_center else None)
@@ -458,6 +460,8 @@ def approve_purchase_requisition_service(
                     is_authorized = True
                 else:
                     is_authorized = True
+            elif approver_role_code == Role.PROC_MGR:
+                is_authorized = True
 
         # Enforce multi-tenant organization boundary: Approver must belong to the requisition's organization
         target_org = (
