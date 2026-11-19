@@ -432,7 +432,11 @@ class TestBrowserNavigationAndSignoutGuard:
         role, _ = Role.objects.get_or_create(code=Role.REQUESTER, defaults={"name": "Requester"})
         user, _ = User.objects.get_or_create(
             email="exit_test_user@procuresphere.com",
-            defaults={"username": "exit_test_user@procuresphere.com", "role": role, "is_active": True},
+            defaults={
+                "username": "exit_test_user@procuresphere.com",
+                "role": role,
+                "is_active": True,
+            },
         )
         client.force_login(user)
 
