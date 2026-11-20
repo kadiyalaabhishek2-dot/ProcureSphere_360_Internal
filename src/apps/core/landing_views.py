@@ -308,7 +308,7 @@ def about(request, section_slug=None):
         'mission_cards': [
             {
                 'tag': 'THE PROBLEM',
-                'title': 'Fragmented Legacy Systems',
+                'title': 'Disconnected Legacy Systems',
                 'desc': 'Traditional enterprises struggle with requisition requests scattered across emails, unrecorded commitments in personal spreadsheets, and invoice reconciliations that take weeks of painful detective work.',
                 'color': '#ef4444',
             },
