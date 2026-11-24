@@ -77,19 +77,23 @@
       scrollbar-width: thin !important;
       scrollbar-color: #2456D6 #f1f5f9 !important;
     }
+
     ::-webkit-scrollbar {
       width: 10px !important;
       height: 10px !important;
       display: block !important;
     }
+
     ::-webkit-scrollbar-track {
       background: #f1f5f9 !important;
     }
+
     ::-webkit-scrollbar-thumb {
       background: #2456D6 !important;
       border-radius: 6px !important;
       border: 2px solid #f1f5f9 !important;
     }
+
     ::-webkit-scrollbar-thumb:hover {
       background: #1b47cb !important;
     }
@@ -164,7 +168,7 @@
   {% endblock body %}
 
   <!-- ===== SITE-WIDE JAVASCRIPT ===== -->
-  <script src="{% static 'landing/js/main.js' %}?v=110"></script>
+  <script src="{% static 'landing/js/main.js' %}?v=135"></script>
   <script src="{% static 'landing/js/core_capabilities.js' %}?v=111"></script>
   <script>
     // Prevent bfcache from displaying stale unauthenticated landing page if user navigated back

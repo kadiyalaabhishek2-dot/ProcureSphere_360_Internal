@@ -379,6 +379,48 @@ html.direct-to-contact body {
   50% { transform: translateX(-50%) translateY(3px); }
 }
 
+/* ── Selected Pill Badge ── */
+.card-selected-badge {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(15, 27, 45, 0.88);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  color: #ffffff;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  font-family: 'DM Mono', monospace;
+  text-transform: uppercase;
+  z-index: 12;
+  opacity: 0;
+  transform: translateY(-4px) scale(0.9);
+  transition: opacity 0.25s ease, transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  pointer-events: none;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+}
+
+.card-selected-badge .csb-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #22c55e;
+  box-shadow: 0 0 8px #22c55e;
+}
+
+.uiverse-card.is-selected .card-selected-badge {
+  opacity: 1 !important;
+  transform: translateY(0) scale(1) !important;
+}
+
+
 @media (max-width: 900px) {
   .desktop-module-hint {
     display: none !important;
@@ -713,12 +755,12 @@ html.direct-to-contact body {
         <!-- Interactive Module Cards -->
         <div id="about-platform-grid" style="display:grid;grid-template-columns:minmax(0,1.15fr) minmax(380px,0.95fr);gap:clamp(24px,3vw,40px);align-items:stretch;padding:0 clamp(24px,4vw,56px);">
           <div style="display:flex;flex-direction:column;">
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;font-size:13px;color:#475569;font-weight:650;flex-wrap:wrap;gap:8px;">
-              <span class="module-action-hint">
-                <span class="desktop-module-hint">Hover on any module:</span>
+            <div style="display:flex;flex-direction:column;gap:5px;margin-bottom:14px;">
+              <span class="module-action-hint" style="font-size:13.5px;color:#475569;font-weight:600;">
+                <span class="desktop-module-hint">Click any module to keep details stable · Hover to preview:</span>
                 <span class="mobile-module-hint">Tap any module to view details below 👇</span>
               </span>
-              <span id="active-module-label" style="color:#0052cc;font-weight:750;">Purchase and Approvals selected <span class="desktop-arrow">→</span><span class="mobile-arrow">↓</span></span>
+              <span id="active-module-label" style="color:#0052cc;font-weight:800;font-size:14.5px;">Purchase and Approvals <span class="desktop-arrow">→</span><span class="mobile-arrow">↓</span></span>
             </div>
             <div class="cinematic-cards-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
               {% for mod in platform_modules %}
@@ -736,6 +778,10 @@ html.direct-to-contact body {
                   tabindex="0"
                   style="cursor:pointer;height:178px;min-height:178px;border-radius:16px;outline:{% if forloop.first %}3.5px solid {{ mod.accent_light }}{% else %}1.5px solid rgba(15,27,45,0.12){% endif %};outline-offset:2px;transform:{% if forloop.first %}scale(1.025){% else %}none{% endif %};box-shadow:{% if forloop.first %}0 22px 48px -8px {{ mod.theme_color }}66,0 8px 22px rgba(15,27,45,0.22){% else %}0 12px 30px -6px rgba(15,27,45,0.24),0 4px 14px rgba(15,27,45,0.12){% endif %};transition:all 0.25s cubic-bezier(0.16,1,0.3,1);"
                 >
+                  <div class="card-selected-badge" title="Selected Module">
+                    <span class="csb-dot"></span>
+                    <span class="csb-text">SELECTED</span>
+                  </div>
                   <div class="logo" style="top:14px;left:16px;width:28px;height:28px;">
                     {% include 'landing/partials/icon.html' with name=mod.icon size=22 %}
                   </div>
@@ -770,7 +816,7 @@ html.direct-to-contact body {
                       <div style="width:42px;height:42px;border-radius:11px;background:{{ mod.theme_color }}18;color:{{ mod.theme_color }};display:flex;align-items:center;justify-content:center;flex-shrink:0;">
                         {% include 'landing/partials/icon.html' with name=mod.icon size=24 %}
                       </div>
-                      <h3 style="margin:0;font-size:clamp(20px, 4vw, 25px);font-weight:800;font-family:'Playfair Display','Georgia',serif;color:#0F1B2D;line-height:1.22;">{{ mod.name_html|default:mod.name|safe }}</h3>
+                      <h3 style="margin:0;font-size:clamp(22px, 2.3vw, 26px);font-weight:800;font-family:'Playfair Display',Georgia,serif;color:#0b1329;line-height:1.25;letter-spacing:-0.01em;-webkit-text-stroke:0.35px #0b1329;text-rendering:optimizeLegibility;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;">{{ mod.name_html|default:mod.name|safe }}</h3>
                     </div>
                     <span class="module-detail-badge" style="font-size:11.5px;font-weight:750;color:{{ mod.theme_color }};background:{{ mod.theme_color }}14;padding:5px 11px;border-radius:6px;font-family:'DM Mono',monospace;letter-spacing:0.04em;white-space:nowrap;">ENTERPRISE CAPABILITY</span>
                   </div>
@@ -1093,7 +1139,7 @@ html.direct-to-contact body {
         CONTACT / RFP
       </div>
       <h2 style="font-family:'Playfair Display',Georgia,serif;font-size:clamp(28px,3.2vw,38px);color:#0F1B2D;font-weight:700;margin:0;line-height:1.2;">
-        Bring us the workflow you want to connect.
+        Get in touch with us today.
       </h2>
     </div>
     <div class="contact-image-wrap">
@@ -1187,7 +1233,7 @@ html.direct-to-contact body {
           name="message"
           id="contact-message"
           rows="5"
-          placeholder="Tell us what you want to connect..."
+          placeholder="Tell us about your requirements or questions..."
           minlength="10"
           maxlength="2000"
           title="Please enter your message (at least 10 characters)"
@@ -1208,6 +1254,101 @@ html.direct-to-contact body {
 
 {% block extra_js %}
 <script>
+// Platform Module Selection: Stable on Click, Hover animation preserved
+(function() {
+  let currentPlatformModuleId = 1;
+  let lockedPlatformModuleId = null;
+  let hoverTimer = null;
+
+  function performSelection(moduleId, isClick) {
+    if (moduleId === currentPlatformModuleId && !isClick) return;
+    const prevId = currentPlatformModuleId;
+    currentPlatformModuleId = moduleId;
+
+    // Smoothly transition old detail out
+    const prevDetail = document.getElementById('module-detail-' + prevId);
+    if (prevDetail && prevId !== moduleId) {
+      prevDetail.classList.remove('is-active');
+      prevDetail.classList.add('is-exiting');
+      setTimeout(function() {
+        prevDetail.classList.remove('is-exiting');
+      }, 360);
+    }
+
+    // Smoothly transition new detail in
+    const nextDetail = document.getElementById('module-detail-' + moduleId);
+    if (nextDetail) {
+      nextDetail.classList.remove('is-exiting');
+      void nextDetail.offsetWidth; // Force reflow
+      nextDetail.classList.add('is-active');
+    }
+
+    // Update card states: ONLY set is-selected if it was clicked/locked!
+    document.querySelectorAll('[data-module]').forEach(function(card) {
+      const cId = parseInt(card.dataset.module, 10);
+      const isActive = (cId === moduleId);
+      const isSelected = (lockedPlatformModuleId !== null && cId === lockedPlatformModuleId);
+
+      card.classList.toggle('is-active', isActive);
+      card.classList.toggle('is-inspecting', isActive);
+      card.classList.toggle('is-selected', isSelected);
+      card.style.outline = isActive ? '3.5px solid ' + (card.dataset.accent || '#00d2ff') : '1.5px solid rgba(15,27,45,0.12)';
+      card.style.outlineOffset = '2px';
+      card.style.transform = isActive ? 'scale(1.025)' : '';
+      const color = card.dataset.color || '#0052cc';
+      card.style.boxShadow = isActive
+        ? '0 22px 48px -8px ' + color + '66, 0 8px 22px rgba(15,27,45,0.22)'
+        : '0 12px 30px -6px rgba(15,27,45,0.24), 0 4px 14px rgba(15,27,45,0.12)';
+
+      const tapCue = card.querySelector('.card-tap-cue span');
+      if (tapCue) {
+        tapCue.textContent = isSelected ? '● Stable & Active →' : (isActive ? '● Viewing Details →' : 'Hover to view details ↗');
+        tapCue.style.fontWeight = (isSelected || isActive) ? '750' : '600';
+      }
+    });
+
+    // Update accent stripe
+    const stripe = document.getElementById('module-accent-stripe');
+    const card = document.querySelector('[data-module="' + moduleId + '"]');
+    if (stripe && card) {
+      stripe.style.background = 'linear-gradient(90deg,' + card.dataset.color + ',' + card.dataset.accent + ')';
+    }
+
+    // Update active label: ONLY show "(Stable & Active)" if clicked/locked!
+    const label = document.getElementById('active-module-label');
+    if (label && card) {
+      if (lockedPlatformModuleId !== null && moduleId === lockedPlatformModuleId) {
+        label.innerHTML = '<strong>' + card.dataset.name + '</strong> (Stable & Active) <span class="desktop-arrow">→</span><span class="mobile-arrow">↓</span>';
+      } else {
+        label.innerHTML = card.dataset.name + ' <span class="desktop-arrow">→</span><span class="mobile-arrow">↓</span>';
+      }
+      label.style.color = card.dataset.color;
+    }
+  }
+
+  window.selectPlatformModule = function(moduleId, immediate) {
+    moduleId = parseInt(moduleId, 10);
+
+    if (immediate) {
+      // User clicked on this module: Lock it as stable until another card is clicked!
+      if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null; }
+      lockedPlatformModuleId = moduleId;
+      performSelection(moduleId, true);
+    } else {
+      // User only hovered on this module:
+      // If a module has been clicked and locked, it remains stable on the clicked module!
+      if (lockedPlatformModuleId !== null) {
+        return;
+      }
+      // If no module has been clicked yet, hover behaves as normal preview without lock
+      if (hoverTimer) clearTimeout(hoverTimer);
+      hoverTimer = setTimeout(function() {
+        performSelection(moduleId, false);
+      }, 70);
+    }
+  };
+})();
+
 // Auto-scroll on mobile/tablet to the details section when a module card is tapped
 function handleMobileModuleClick(modId) {
   if (window.innerWidth <= 900) {
