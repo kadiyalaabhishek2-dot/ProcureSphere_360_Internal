@@ -416,11 +416,16 @@
 
 .about-connected-title {
   font-family: 'Playfair Display', Georgia, serif;
-  font-size: 23px;
-  font-weight: 700;
-  color: #0f172a;
+  font-size: clamp(23px, 2.2vw, 25px);
+  font-weight: 800;
+  color: #0b1329;
   margin: 0 0 4px 0;
   line-height: 1.25;
+  letter-spacing: -0.01em;
+  -webkit-text-stroke: 0.35px #0b1329;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 .about-connected-subtitle {
