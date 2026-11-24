@@ -524,81 +524,112 @@
   };
 
   /* ─────────────────────────────────────────────
-     8. PLATFORM MODULE SELECTION (Home)
+     8. PLATFORM MODULE SELECTION & STABILITY (Home)
   ──────────────────────────────────────────────*/
-  let platformModuleHoverTimer = null;
   let currentPlatformModuleId = 1;
+  let lockedPlatformModuleId = null;
+  let platformModuleHoverTimer = null;
+
+  function performSelection(moduleId, isClick) {
+    if (moduleId === currentPlatformModuleId && !isClick) return;
+    const prevId = currentPlatformModuleId;
+    currentPlatformModuleId = moduleId;
+
+    // Smoothly transition old detail out
+    const prevDetail = document.getElementById('module-detail-' + prevId);
+    if (prevDetail && prevId !== moduleId) {
+      prevDetail.classList.remove('is-active');
+      prevDetail.classList.add('is-exiting');
+      setTimeout(() => {
+        prevDetail.classList.remove('is-exiting');
+      }, 360);
+    }
+
+    // Smoothly transition new detail in
+    const nextDetail = document.getElementById('module-detail-' + moduleId);
+    if (nextDetail) {
+      nextDetail.classList.remove('is-exiting');
+      void nextDetail.offsetWidth; // Force reflow
+      nextDetail.classList.add('is-active');
+    }
+
+    // Update card states: ONLY set is-selected if it was clicked/locked!
+    document.querySelectorAll('[data-module]').forEach(card => {
+      const cId = parseInt(card.dataset.module, 10);
+      const isActive = (cId === moduleId);
+      const isSelected = (lockedPlatformModuleId !== null && cId === lockedPlatformModuleId);
+
+      card.classList.toggle('is-active', isActive);
+      card.classList.toggle('is-inspecting', isActive);
+      card.classList.toggle('is-selected', isSelected);
+      card.style.outline = isActive ? '3.5px solid ' + (card.dataset.accent || '#00d2ff') : '1.5px solid rgba(15,27,45,0.12)';
+      card.style.outlineOffset = '2px';
+      card.style.transform = isActive ? 'scale(1.025)' : '';
+      const color = card.dataset.color || '#0052cc';
+      card.style.boxShadow = isActive
+        ? `0 22px 48px -8px ${color}66, 0 8px 22px rgba(15,27,45,0.22)`
+        : '0 12px 30px -6px rgba(15,27,45,0.24), 0 4px 14px rgba(15,27,45,0.12)';
+
+      const tapCue = card.querySelector('.card-tap-cue span');
+      if (tapCue) {
+        tapCue.textContent = isSelected ? '● Stable & Active →' : (isActive ? '● Viewing Details →' : 'Hover to view details ↗');
+        tapCue.style.fontWeight = (isSelected || isActive) ? '750' : '600';
+      }
+    });
+
+    // Update accent stripe
+    const stripe = document.getElementById('module-accent-stripe');
+    const card = document.querySelector(`[data-module="${moduleId}"]`);
+    if (stripe && card) {
+      stripe.style.background = `linear-gradient(90deg,${card.dataset.color},${card.dataset.accent})`;
+    }
+
+    // Update active label: ONLY show "(Stable & Active)" if clicked/locked!
+    const label = document.getElementById('active-module-label');
+    if (label && card) {
+      if (lockedPlatformModuleId !== null && moduleId === lockedPlatformModuleId) {
+        label.innerHTML = `<strong>${card.dataset.name}</strong> (Stable & Active) <span class="desktop-arrow">→</span><span class="mobile-arrow">↓</span>`;
+      } else {
+        label.innerHTML = `${card.dataset.name} <span class="desktop-arrow">→</span><span class="mobile-arrow">↓</span>`;
+      }
+      label.style.color = card.dataset.color;
+    }
+  }
 
   window.selectPlatformModule = function (moduleId, immediate) {
     moduleId = parseInt(moduleId, 10);
-    if (moduleId === currentPlatformModuleId && !immediate) return;
-
-    const performSelection = () => {
-      if (moduleId === currentPlatformModuleId) return;
-      const prevId = currentPlatformModuleId;
-      currentPlatformModuleId = moduleId;
-
-      // Smoothly transition old detail out
-      const prevDetail = document.getElementById('module-detail-' + prevId);
-      if (prevDetail) {
-        prevDetail.classList.remove('is-active');
-        prevDetail.classList.add('is-exiting');
-        setTimeout(() => {
-          prevDetail.classList.remove('is-exiting');
-        }, 360);
-      }
-
-      // Smoothly transition new detail in
-      const nextDetail = document.getElementById('module-detail-' + moduleId);
-      if (nextDetail) {
-        nextDetail.classList.remove('is-exiting');
-        void nextDetail.offsetWidth; // Force reflow so transition smoothly plays
-        nextDetail.classList.add('is-active');
-      }
-
-      // Update card states
-      document.querySelectorAll('[data-module]').forEach(card => {
-        const isActive = parseInt(card.dataset.module, 10) === moduleId;
-        card.classList.toggle('is-active', isActive);
-        card.classList.toggle('is-inspecting', isActive);
-        card.style.outline = isActive ? '3.5px solid ' + (card.dataset.accent || '#00d2ff') : '1.5px solid rgba(15,27,45,0.12)';
-        card.style.outlineOffset = '2px';
-        card.style.transform = isActive ? 'scale(1.025)' : '';
-        const color = card.dataset.color || '#0052cc';
-        card.style.boxShadow = isActive
-          ? `0 22px 48px -8px ${color}66, 0 8px 22px rgba(15,27,45,0.22)`
-          : '0 12px 30px -6px rgba(15,27,45,0.24), 0 4px 14px rgba(15,27,45,0.12)';
-
-        // Update tap cue text
-        const tapCue = card.querySelector('.card-tap-cue span');
-        if (tapCue) {
-          tapCue.textContent = isActive ? '● Viewing Details →' : 'Hover to view details ↗';
-          tapCue.style.fontWeight = isActive ? '750' : '600';
-        }
-      });
-
-      // Update accent stripe
-      const stripe = document.getElementById('module-accent-stripe');
-      const card = document.querySelector(`[data-module="${moduleId}"]`);
-      if (stripe && card) {
-        stripe.style.background = `linear-gradient(90deg,${card.dataset.color},${card.dataset.accent})`;
-      }
-
-      // Update active label
-      const label = document.getElementById('active-module-label');
-      if (label && card) {
-        label.innerHTML = `${card.dataset.name} selected <span class="desktop-arrow">→</span><span class="mobile-arrow">↓</span>`;
-        label.style.color = card.dataset.color;
-      }
-    };
 
     if (immediate) {
-      if (platformModuleHoverTimer) clearTimeout(platformModuleHoverTimer);
-      performSelection();
+      // User clicked on this module: Lock it as stable until another card is clicked!
+      if (platformModuleHoverTimer) { clearTimeout(platformModuleHoverTimer); platformModuleHoverTimer = null; }
+      lockedPlatformModuleId = moduleId;
+      performSelection(moduleId, true);
     } else {
+      // User hovered on this module:
+      // If a module has been clicked and locked, it remains stable on the clicked module!
+      if (lockedPlatformModuleId !== null) {
+        return;
+      }
+      // If no module has been clicked yet, hover behaves as normal preview without lock
       if (platformModuleHoverTimer) clearTimeout(platformModuleHoverTimer);
-      platformModuleHoverTimer = setTimeout(performSelection, 85);
+      platformModuleHoverTimer = setTimeout(() => {
+        performSelection(moduleId, false);
+      }, 70);
     }
+  };
+
+  // When mouse leaves the module cards container, restore the stable clicked module
+  window.handleModuleGridLeave = function () {
+    if (platformModuleHoverTimer) {
+      clearTimeout(platformModuleHoverTimer);
+      platformModuleHoverTimer = null;
+    }
+    if (platformModuleLeaveTimer) clearTimeout(platformModuleLeaveTimer);
+    platformModuleLeaveTimer = setTimeout(() => {
+      if (currentPlatformModuleId !== selectedPlatformModuleId) {
+        updatePlatformDisplay(selectedPlatformModuleId, false);
+      }
+    }, 120);
   };
 
   /* ─────────────────────────────────────────────
