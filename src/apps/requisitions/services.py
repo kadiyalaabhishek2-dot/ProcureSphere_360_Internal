@@ -148,7 +148,7 @@ def create_purchase_requisition_service(
 
 @transaction.atomic
 def submit_purchase_requisition_service(
-    *, requisition: PurchaseRequisition, user: User
+    *, requisition: PurchaseRequisition, user: User, allow_budget_exception: bool = False
 ) -> PurchaseRequisition:
     """
     Submits a PR for approval:
@@ -188,7 +188,7 @@ def submit_purchase_requisition_service(
     if not chain:
         dept_name = requisition.department.name if requisition.department else "Global"
         raise ValidationError(
-            f"No active approval policy found matching requisition amount ${requisition.total_amount:,.2f} "
+            f"No active approval policy found matching requisition amount ₹{requisition.total_amount:,.2f} "
             f"and department '{dept_name}'. Submission rejected under fail-closed routing rule."
         )
 
@@ -197,8 +197,15 @@ def submit_purchase_requisition_service(
         check_and_reserve_budget_service(requisition=requisition, requested_by_user=user)
         requisition.status = PurchaseRequisition.STATUS_MANAGER_REVIEW
     except BudgetOverrunException:
-        # Route to budget exception review
-        requisition.status = PurchaseRequisition.STATUS_BUDGET_REVIEW
+        if allow_budget_exception:
+            # Explicitly authorized route to budget exception review
+            requisition.status = PurchaseRequisition.STATUS_BUDGET_REVIEW
+        else:
+            cc_code = requisition.cost_center.code if requisition.cost_center else "N/A"
+            raise ValidationError(
+                f"Insufficient budget for Cost Center '{cc_code}'. "
+                f"Requested: ₹{requisition.total_amount:,.2f}. Requisition submission rejected under fail-closed budget policy."
+            )
 
     previous_status = PurchaseRequisition.STATUS_DRAFT
     requisition.save(update_fields=["status", "updated_at"])
@@ -273,7 +280,7 @@ def submit_purchase_requisition_service(
                 recipient=fin_user,
                 notification_type=Notification.TYPE_APPROVAL_REQUIRED,
                 title=f"Budget Exception Alert: PR {requisition.pr_number} Exceeds Budget",
-                message=f"Requisition {requisition.pr_number} (${requisition.total_amount:,.2f}) exceeds available budget for Cost Center {requisition.cost_center.code} and requires Finance AP budget exception approval.",
+                message=f"Requisition {requisition.pr_number} (₹{requisition.total_amount:,.2f}) exceeds available budget for Cost Center {requisition.cost_center.code} and requires Finance AP budget exception approval.",
                 target_url=f"/requisitions/{requisition.id}/",
             )
         for approver in approver_list:
@@ -281,7 +288,7 @@ def submit_purchase_requisition_service(
                 recipient=approver,
                 notification_type=Notification.TYPE_APPROVAL_REQUIRED,
                 title=f"Budget Alert: PR {requisition.pr_number} Exceeds Budget",
-                message=f"Requisition {requisition.pr_number} (${requisition.total_amount:,.2f}) exceeds available budget for Cost Center {requisition.cost_center.code} and is queued for Finance AP budget exception review.",
+                message=f"Requisition {requisition.pr_number} (₹{requisition.total_amount:,.2f}) exceeds available budget for Cost Center {requisition.cost_center.code} and is queued for Finance AP budget exception review.",
                 target_url=f"/requisitions/{requisition.id}/",
             )
     else:
@@ -290,7 +297,7 @@ def submit_purchase_requisition_service(
                 recipient=approver,
                 notification_type=Notification.TYPE_APPROVAL_REQUIRED,
                 title=f"New PR Approval Request: {requisition.pr_number}",
-                message=f"Requisition {requisition.pr_number} ({requisition.title}) amounting to ${requisition.total_amount:,.2f} requires your department approval review.",
+                message=f"Requisition {requisition.pr_number} ({requisition.title}) amounting to ₹{requisition.total_amount:,.2f} requires your department approval review.",
                 target_url=f"/requisitions/{requisition.id}/",
             )
 
@@ -342,7 +349,7 @@ def approve_purchase_requisition_service(
         if budget and not budget.allow_overspend and requisition.total_amount > budget.available_amount:
             raise ValidationError(
                 f"Budget overspend is not permitted for Cost Center '{requisition.cost_center.code}'. "
-                f"allow_overspend is disabled and requested amount (${requisition.total_amount:,.2f}) exceeds available budget (${budget.available_amount:,.2f})."
+                f"allow_overspend is disabled and requested amount (₹{requisition.total_amount:,.2f}) exceeds available budget (₹{budget.available_amount:,.2f})."
             )
 
         # Finance AP (or Procurement Manager fallback) is approving an overrun explicitly, force the reservation
@@ -460,7 +467,24 @@ def approve_purchase_requisition_service(
                     is_authorized = True
                 else:
                     is_authorized = True
-            elif approver_role_code == Role.PROC_MGR:
+            elif approver_role_code == Role.DEPT_APPROVER and getattr(required_role, "code", None) in [Role.PROC_MGR, "PROC_MGR"]:
+                req_dept = requisition.department or (requisition.cost_center.department if requisition.cost_center else None)
+                if (approver.department_id and req_dept and approver.department_id != req_dept.id) and not (requisition.cost_center and approver.id == requisition.cost_center.manager_id):
+                    has_own_approver = (
+                        User.objects.filter(
+                            role__code=Role.DEPT_APPROVER,
+                            department=req_dept,
+                            is_active=True,
+                        )
+                        .exclude(id=approver.id)
+                        .exists()
+                    )
+                    if has_own_approver:
+                        raise ValidationError("Department Approver can only approve requisitions for their own department.")
+                is_authorized = True
+            elif approver_role_code == Role.PROC_MGR and (
+                required_role.code == Role.PROC_MGR or len(chain) == 1
+            ):
                 is_authorized = True
 
         # Enforce multi-tenant organization boundary: Approver must belong to the requisition's organization

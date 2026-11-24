@@ -795,11 +795,20 @@ def detail_view(request, pk):
     ).order_by("created_at")
     current_step_index = existing_approvals.count()
     user_has_approved = existing_approvals.filter(actor=user).exists()
+    user_has_rejected = ApprovalAction.objects.filter(
+        target_object_id=str(pr.id),
+        target_model_name="PurchaseRequisition",
+        actor=user,
+        action=ApprovalAction.ACTION_REJECT,
+    ).exists()
+    user_has_acted = user_has_approved or user_has_rejected
 
     can_approve = False
     current_step_info = None
 
-    if is_budget_exceeded and role_code == Role.DEPT_APPROVER:
+    if user_has_acted and not user.is_superuser:
+        can_approve = False
+    elif is_budget_exceeded and role_code == Role.DEPT_APPROVER:
         can_approve = False
     elif pr.status in [
         PurchaseRequisition.STATUS_SUBMITTED,
@@ -841,6 +850,32 @@ def detail_view(request, pk):
                             can_approve = True
                     else:
                         can_approve = True
+                elif (
+                    role_code == Role.DEPT_APPROVER
+                    and getattr(req_role, "code", None) in [Role.PROC_MGR, "PROC_MGR"]
+                    and current_step_index == 0
+                ):
+                    pr_dept = pr.department or (
+                        pr.cost_center.department if pr.cost_center else None
+                    )
+                    if pr_dept and user.department:
+                        has_own_approver = (
+                            User.objects.filter(
+                                role__code=Role.DEPT_APPROVER,
+                                department=pr_dept,
+                                is_active=True,
+                            )
+                            .exclude(id=user.id)
+                            .exists()
+                        )
+                        if (
+                            user.department == pr_dept
+                            or (pr.cost_center and user == pr.cost_center.manager)
+                            or not has_own_approver
+                        ):
+                            can_approve = True
+                    else:
+                        can_approve = True
         elif not chain and role_code in [Role.DEPT_APPROVER, Role.SUPER_ADMIN]:
             can_approve = not user_has_approved
     elif pr.status == PurchaseRequisition.STATUS_BUDGET_REVIEW:
@@ -850,10 +885,17 @@ def detail_view(request, pk):
             can_approve = False
 
     can_reject = False
-    if role_code in [Role.PROC_MGR, "PROC_MGR"] and not user.is_superuser:
+    if user_has_acted and not user.is_superuser:
+        can_reject = False
+    elif role_code in [Role.PROC_MGR, "PROC_MGR"] and not user.is_superuser:
         can_approve = False
         can_reject = bool(is_budget_exceeded or pr.status == PurchaseRequisition.STATUS_BUDGET_REVIEW)
     elif pr.status == PurchaseRequisition.STATUS_BUDGET_REVIEW and (role_code in [Role.FINANCE_AP, Role.SUPER_ADMIN] or user.is_superuser):
+        can_reject = True
+    elif is_budget_exceeded and role_code in [Role.DEPT_APPROVER, Role.SUPER_ADMIN] and pr.status in [
+        PurchaseRequisition.STATUS_SUBMITTED,
+        PurchaseRequisition.STATUS_MANAGER_REVIEW,
+    ]:
         can_reject = True
     else:
         can_reject = can_approve
@@ -878,6 +920,8 @@ def detail_view(request, pk):
             "can_approve": can_approve,
             "can_reject": can_reject,
             "user_has_approved": user_has_approved,
+            "user_has_rejected": user_has_rejected,
+            "user_has_acted": user_has_acted,
             "current_step_info": current_step_info,
             "latest_po": latest_po,
             "latest_sourcing": latest_sourcing,

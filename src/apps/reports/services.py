@@ -1,9 +1,11 @@
 import csv
 import io
+from typing import Any
 
 from django.core.files.base import ContentFile
 from django.utils import timezone
 
+from apps.accounts.models import Role
 from apps.audit.models import AuditLog
 from apps.contracts.models import Contract
 from apps.invoices.models import MatchException
@@ -23,6 +25,7 @@ def get_pr_aging_report(user=None):
         org = getattr(user, "effective_organization", None)
         if org:
             from django.db.models import Q as _Q
+
             prs = prs.filter(
                 _Q(department__organization=org)
                 | _Q(cost_center__department__organization=org)
@@ -70,19 +73,17 @@ def get_spend_analytics_report(
     Preserves multi-tenant organization boundaries and supports multidimensional filtering.
     """
     from django.db.models import Q as _Q
+
     from apps.invoices.models import SupplierInvoice
 
-    invoices = (
-        SupplierInvoice.objects.select_related(
-            "vendor",
-            "vendor__category",
-            "po",
-            "po__cost_center",
-            "po__cost_center__department",
-            "po__requisition__department",
-        )
-        .filter(status=SupplierInvoice.STATUS_PAID)
-    )
+    invoices = SupplierInvoice.objects.select_related(
+        "vendor",
+        "vendor__category",
+        "po",
+        "po__cost_center",
+        "po__cost_center__department",
+        "po__requisition__department",
+    ).filter(status=SupplierInvoice.STATUS_PAID)
 
     # Multi-tenant isolation: superusers see all; org-scoped users see only their tenant
     if user and not getattr(user, "is_superuser", False):
@@ -96,6 +97,8 @@ def get_spend_analytics_report(
                 | _Q(po__requisition__department__organization=org)
                 | _Q(po__created_by__organization=org)
                 | _Q(vendor__organization=org)
+                | _Q(created_by__organization=org)
+                | _Q(approved_by__organization=org)
             ).distinct()
         elif role_code in [
             Role.PROC_MGR,
@@ -126,21 +129,48 @@ def get_spend_analytics_report(
     elif period:
         p_str = str(period).strip().upper()
         from datetime import date
+
         if "Q1" in p_str:
-            year = int(p_str.split("-")[0].replace("FY", "")) if p_str.split("-")[0].replace("FY", "").isdigit() else timezone.now().date().year
-            invoices = invoices.filter(invoice_date__gte=date(year, 1, 1), invoice_date__lte=date(year, 3, 31))
+            year = (
+                int(p_str.split("-")[0].replace("FY", ""))
+                if p_str.split("-")[0].replace("FY", "").isdigit()
+                else timezone.now().date().year
+            )
+            invoices = invoices.filter(
+                invoice_date__gte=date(year, 1, 1), invoice_date__lte=date(year, 3, 31)
+            )
         elif "Q2" in p_str:
-            year = int(p_str.split("-")[0].replace("FY", "")) if p_str.split("-")[0].replace("FY", "").isdigit() else timezone.now().date().year
-            invoices = invoices.filter(invoice_date__gte=date(year, 4, 1), invoice_date__lte=date(year, 6, 30))
+            year = (
+                int(p_str.split("-")[0].replace("FY", ""))
+                if p_str.split("-")[0].replace("FY", "").isdigit()
+                else timezone.now().date().year
+            )
+            invoices = invoices.filter(
+                invoice_date__gte=date(year, 4, 1), invoice_date__lte=date(year, 6, 30)
+            )
         elif "Q3" in p_str:
-            year = int(p_str.split("-")[0].replace("FY", "")) if p_str.split("-")[0].replace("FY", "").isdigit() else timezone.now().date().year
-            invoices = invoices.filter(invoice_date__gte=date(year, 7, 1), invoice_date__lte=date(year, 9, 30))
+            year = (
+                int(p_str.split("-")[0].replace("FY", ""))
+                if p_str.split("-")[0].replace("FY", "").isdigit()
+                else timezone.now().date().year
+            )
+            invoices = invoices.filter(
+                invoice_date__gte=date(year, 7, 1), invoice_date__lte=date(year, 9, 30)
+            )
         elif "Q4" in p_str:
-            year = int(p_str.split("-")[0].replace("FY", "")) if p_str.split("-")[0].replace("FY", "").isdigit() else timezone.now().date().year
-            invoices = invoices.filter(invoice_date__gte=date(year, 10, 1), invoice_date__lte=date(year, 12, 31))
+            year = (
+                int(p_str.split("-")[0].replace("FY", ""))
+                if p_str.split("-")[0].replace("FY", "").isdigit()
+                else timezone.now().date().year
+            )
+            invoices = invoices.filter(
+                invoice_date__gte=date(year, 10, 1), invoice_date__lte=date(year, 12, 31)
+            )
         elif p_str.startswith("FY") and p_str[2:].isdigit():
             year = int(p_str[2:])
-            invoices = invoices.filter(invoice_date__gte=date(year, 1, 1), invoice_date__lte=date(year, 12, 31))
+            invoices = invoices.filter(
+                invoice_date__gte=date(year, 1, 1), invoice_date__lte=date(year, 12, 31)
+            )
         elif len(p_str) == 7 and p_str[:4].isdigit() and p_str[4] == "-" and p_str[5:7].isdigit():
             year = int(p_str[:4])
             month = int(p_str[5:7])
@@ -155,6 +185,7 @@ def get_spend_analytics_report(
     if start_date:
         if isinstance(start_date, str):
             from datetime import date
+
             try:
                 start_dt = date.fromisoformat(str(start_date).strip()[:10])
             except (ValueError, TypeError):
@@ -167,6 +198,7 @@ def get_spend_analytics_report(
     if end_date:
         if isinstance(end_date, str):
             from datetime import date
+
             try:
                 end_dt = date.fromisoformat(str(end_date).strip()[:10])
             except (ValueError, TypeError):
@@ -179,10 +211,12 @@ def get_spend_analytics_report(
     # Category filter (ID or name/code)
     if category:
         from django.db.models import Q as _Q
+
         cat_val = str(category).strip()
         if cat_val:
             try:
                 import uuid
+
                 uuid.UUID(cat_val)
                 is_id = True
             except (ValueError, AttributeError):
@@ -199,10 +233,12 @@ def get_spend_analytics_report(
     # Department filter (ID or name/code)
     if department:
         from django.db.models import Q as _Q
+
         dept_val = str(department).strip()
         if dept_val:
             try:
                 import uuid
+
                 uuid.UUID(dept_val)
                 is_id = True
             except (ValueError, AttributeError):
@@ -224,10 +260,12 @@ def get_spend_analytics_report(
     # Cost center filter (ID or code/name)
     if cost_center:
         from django.db.models import Q as _Q
+
         cc_val = str(cost_center).strip()
         if cc_val:
             try:
                 import uuid
+
                 uuid.UUID(cc_val)
                 is_id = True
             except (ValueError, AttributeError):
@@ -244,10 +282,12 @@ def get_spend_analytics_report(
     # Vendor filter (ID or legal_name/vendor_code)
     if vendor:
         from django.db.models import Q as _Q
+
         vend_val = str(vendor).strip()
         if vend_val:
             try:
                 import uuid
+
                 uuid.UUID(vend_val)
                 is_id = True
             except (ValueError, AttributeError):
@@ -275,7 +315,9 @@ def get_spend_analytics_report(
             dept_name = po.requisition.department.name
 
         cc_code = po.cost_center.code if po and po.cost_center else "N/A"
-        cat_name = inv.vendor.category.name if inv.vendor and inv.vendor.category else "Uncategorized"
+        cat_name = (
+            inv.vendor.category.name if inv.vendor and inv.vendor.category else "Uncategorized"
+        )
         period_str = inv.invoice_date.strftime("%Y-%m")
 
         report_data.append(
@@ -302,6 +344,7 @@ def get_sourcing_cycle_time_report(user=None):
         org = getattr(user, "effective_organization", None)
         if org:
             from django.db.models import Q as _Q
+
             events = events.filter(
                 _Q(requisition__department__organization=org)
                 | _Q(requisition__isnull=True, created_by__organization=org)
@@ -336,6 +379,7 @@ def get_po_status_report(user=None):
         org = getattr(user, "effective_organization", None)
         if org:
             from django.db.models import Q as _Q
+
             pos = pos.filter(
                 _Q(cost_center__department__organization=org)
                 | _Q(requisition__department__organization=org)
@@ -364,6 +408,7 @@ def get_receipt_rejection_report(
     vendor=None,
     po_number=None,
     inspection_status=None,
+    user=None,
 ):
     """5. Receipt / rejection and delivery performance report"""
     from django.utils.dateparse import parse_date
@@ -382,6 +427,17 @@ def get_receipt_rejection_report(
         .all()
         .order_by("-receipt__received_date", "receipt__grn_number")
     )
+
+    if user and not getattr(user, "is_superuser", False):
+        org = getattr(user, "effective_organization", None) or getattr(user, "organization", None)
+        if org:
+            from django.db.models import Q as _Q
+
+            receipt_lines = receipt_lines.filter(
+                _Q(receipt__po__cost_center__department__organization=org)
+                | _Q(receipt__po__created_by__organization=org)
+                | _Q(receipt__received_by__organization=org)
+            )
 
     if start_date:
         parsed_start = parse_date(str(start_date)) if isinstance(start_date, str) else start_date
@@ -513,6 +569,7 @@ def get_invoice_exception_aging_report(user=None):
         org = getattr(user, "effective_organization", None)
         if org:
             from django.db.models import Q as _Q
+
             exceptions = exceptions.filter(
                 _Q(invoice__po__cost_center__department__organization=org)
                 | _Q(invoice__po__requisition__department__organization=org)
@@ -674,9 +731,13 @@ def _score(value):
     return None if value is None else float(value)
 
 
-def get_supplier_performance_report():
+def get_supplier_performance_report(user=None):
     """8. Supplier performance scorecard and trend"""
     scorecards = VendorScorecard.objects.select_related("vendor", "evaluated_by").all()
+    if user and not getattr(user, "is_superuser", False):
+        org = getattr(user, "effective_organization", None) or getattr(user, "organization", None)
+        if org:
+            scorecards = scorecards.filter(vendor__organization=org)
     report_data = []
     for sc in scorecards:
         report_data.append(
@@ -696,9 +757,18 @@ def get_supplier_performance_report():
     return report_data
 
 
-def get_audit_log_report():
+def get_audit_log_report(user=None):
     """9. User / approval audit export with filters and immutable references"""
-    logs = AuditLog.objects.select_related("actor").all()[:200]
+    logs = AuditLog.objects.select_related("actor").all()
+    if user and not getattr(user, "is_superuser", False):
+        org = getattr(user, "effective_organization", None) or getattr(user, "organization", None)
+        if org:
+            from django.db.models import Q as _Q
+
+            logs = logs.filter(
+                _Q(actor__organization=org) | _Q(actor__department__organization=org)
+            )
+    logs = logs[:200]
     report_data = []
     for log in logs:
         report_data.append(
@@ -714,7 +784,7 @@ def get_audit_log_report():
     return report_data
 
 
-REPORT_DISPATCHER = {
+REPORT_DISPATCHER: dict[str, Any] = {
     "pr_aging": get_pr_aging_report,
     "spend_analytics": get_spend_analytics_report,
     "sourcing_cycle": get_sourcing_cycle_time_report,
@@ -740,11 +810,12 @@ def generate_export_job_service(export_job_id: int) -> ExportJob:
     job.save(update_fields=["status", "updated_at"])
 
     try:
-        report_fn = REPORT_DISPATCHER.get(job.report_type)
+        report_fn: Any = REPORT_DISPATCHER.get(job.report_type)
         if report_fn is None:
             raise ValueError(f"Unsupported report type: {job.report_type}")
         try:
-            data = report_fn(user=job.requested_by)
+            kwargs = {"user": job.requested_by}
+            data = report_fn(**kwargs)
         except TypeError:
             data = report_fn()
 
@@ -914,6 +985,7 @@ def generate_export_job_service(export_job_id: int) -> ExportJob:
 
         # Compute SHA-256 of the generated file for integrity verification
         import hashlib
+
         if job.result_file:
             job.result_file.seek(0)
             job.file_hash = hashlib.sha256(job.result_file.read()).hexdigest()

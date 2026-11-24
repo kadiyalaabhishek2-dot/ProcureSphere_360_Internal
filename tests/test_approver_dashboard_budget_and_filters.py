@@ -27,8 +27,12 @@ def setup_approver_env(db):
         is_closed=False,
     )
 
-    approver_role, _ = Role.objects.get_or_create(code=Role.DEPT_APPROVER, defaults={"name": "Department Approver"})
-    requester_role, _ = Role.objects.get_or_create(code=Role.REQUESTER, defaults={"name": "Requester"})
+    approver_role, _ = Role.objects.get_or_create(
+        code=Role.DEPT_APPROVER, defaults={"name": "Department Approver"}
+    )
+    requester_role, _ = Role.objects.get_or_create(
+        code=Role.REQUESTER, defaults={"name": "Requester"}
+    )
 
     approver_user = User.objects.create_user(
         email="approver_test@hpe.com",
@@ -619,11 +623,30 @@ def test_non_actionable_pr_policy_does_not_hide_dept_approver_controls(client, s
     assert 'name="action" value="REJECTED"' in inbox_html
 
     # Verify #approvalActionDecision card does NOT contain duplicate Approve/Reject form buttons below Decision Comments
-    card_segment = detail_html.split('id="approvalActionDecision"', 1)[1].split("Approval History", 1)[0]
+    card_segment = detail_html.split('id="approvalActionDecision"', 1)[1].split(
+        "Approval History", 1
+    )[0]
     assert 'id="decisionCommentsSidebar"' in card_segment
     assert "<button" not in card_segment
     assert "/approve/" not in card_segment
     assert "/reject/" not in card_segment
+
+    # Now approver submits approval
+    approve_resp = client.post(
+        f"/requisitions/{pr.id}/approve/",
+        {"comments": "Looks good from dept"},
+    )
+    assert approve_resp.status_code in (302, 200)
+
+    # After approving, detail view must NOT show Approve or Reject buttons again to this approver
+    detail_after = client.get(f"/requisitions/{pr.id}/")
+    assert detail_after.context["can_approve"] is False
+    assert detail_after.context["can_reject"] is False
+    assert detail_after.context["user_has_approved"] is True
+    content_after = detail_after.content.decode("utf-8")
+    assert "Approve PR" not in content_after
+    assert "Reject PR" not in content_after
+    assert "You Approved Step 1" in content_after
 
 
 @pytest.mark.django_db
@@ -644,7 +667,9 @@ def test_department_prs_uses_approver_prefixed_url(client, setup_approver_env):
 
 
 @pytest.mark.django_db
-def test_approver_sees_and_approves_prs_from_departments_without_own_approver(client, setup_approver_env):
+def test_approver_sees_and_approves_prs_from_departments_without_own_approver(
+    client, setup_approver_env
+):
     """
     When an organization has departments without dedicated approvers, the organization's
     active department approvers must see those PRs in their pending queue, inbox, and list,
@@ -750,13 +775,16 @@ def test_approver_sees_and_approves_prs_from_departments_without_own_approver(cl
 
 
 @pytest.mark.django_db
-def test_notification_symbol_not_red_when_zero_unread_notifications_even_with_pending_approvals(client, setup_approver_env):
+def test_notification_symbol_not_red_when_zero_unread_notifications_even_with_pending_approvals(
+    client, setup_approver_env
+):
     """
     Verifies that the global navbar notification bell does not display a red badge
     for pending approvals when unread notifications are 0. Marking all notifications
     as read clears any red badge on the notification bell.
     """
     from apps.notifications.models import Notification
+
     env = setup_approver_env
     approver = env["approver"]
     client.force_login(approver)
@@ -774,7 +802,9 @@ def test_notification_symbol_not_red_when_zero_unread_notifications_even_with_pe
     dash_resp = client.get("/approver/")
     assert dash_resp.status_code == 200
     dash_html = dash_resp.content.decode("utf-8")
-    bell_part_unread = dash_html[dash_html.find('title="Notifications"'):dash_html.find('title="Notifications"') + 500]
+    bell_part_unread = dash_html[
+        dash_html.find('title="Notifications"') : dash_html.find('title="Notifications"') + 500
+    ]
     assert "bg-danger" in bell_part_unread
 
     # 2. Mark all notifications as read via the endpoint
@@ -788,7 +818,9 @@ def test_notification_symbol_not_red_when_zero_unread_notifications_even_with_pe
     assert dash_resp2.status_code == 200
     dash2_html = dash_resp2.content.decode("utf-8")
     assert 'title="Notifications"' in dash2_html
-    bell_part_read = dash2_html[dash2_html.find('title="Notifications"'):dash2_html.find('title="Notifications"') + 500]
+    bell_part_read = dash2_html[
+        dash2_html.find('title="Notifications"') : dash2_html.find('title="Notifications"') + 500
+    ]
     assert "bg-danger" not in bell_part_read
 
 
@@ -888,8 +920,3 @@ def test_view_overrun_prs_shows_only_budget_overrun_requisitions(client, setup_a
     assert "PR-OVERRUN-001" in param_html
     assert "PR-BUDGET-EXC-002" in param_html
     assert "PR-NORMAL-001" not in param_html
-
-
-
-
-

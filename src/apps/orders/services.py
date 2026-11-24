@@ -154,7 +154,7 @@ def generate_purchase_order_service(
                 recipient=v_user,
                 notification_type=Notification.TYPE_PO_ISSUED,
                 title=f"New Purchase Order Issued: {po.po_number}",
-                message=f"A new Purchase Order {po.po_number} (${po.total_amount:,.2f}) has been issued to {vendor.legal_name}.",
+                message=f"A new Purchase Order {po.po_number} (₹{po.total_amount:,.2f}) has been issued to {vendor.legal_name}.",
                 target_url=f"/orders/{po.id}/",
             )
         # Notify requisition requester if present
@@ -189,7 +189,7 @@ def generate_purchase_order_service(
             vendor=vendor,
             notification_type=Notification.TYPE_PO_ISSUED,
             title=f"Purchase Order Issued: {po.po_number}",
-            message=f"Purchase Order {po.po_number} for ${po.total_amount:,.2f} has been issued and requires formal acknowledgement.",
+            message=f"Purchase Order {po.po_number} for ₹{po.total_amount:,.2f} has been issued and requires formal acknowledgement.",
             target_url=f"/vendor/purchase-orders/{po.id}/",
         )
 
@@ -448,7 +448,10 @@ def request_po_amendment_service(
 
     tax = subtotal * tax_rate
     proposed_total = subtotal + tax
-    old_total = Decimal(str(snapshot["total_amount"]))
+    old_subtotal = sum((line.line_total for line in existing_lines), Decimal("0.00"))
+    old_total = old_subtotal + (old_subtotal * tax_rate)
+    if old_total <= Decimal("0.00"):
+        old_total = Decimal(str(snapshot.get("total_amount", "0.00")))
     delta = proposed_total - old_total
 
     # Verify Budget availability if delta > 0
@@ -458,12 +461,12 @@ def request_po_amendment_service(
             .order_by("-created_at")
             .first()
         )
-        if budget:
+        if budget and not budget.allow_overspend:
             available = budget.available_amount
             if available < delta:
                 raise ValidationError(
                     f"Insufficient budget for cost center {po.cost_center.code}. "
-                    f"Additional commitment required: ${delta:,.2f}, Available: ${available:,.2f}."
+                    f"Additional commitment required: ₹{delta:,.2f}, Available: ₹{available:,.2f}."
                 )
 
     amendment_count = po.amendments.count() + 1
@@ -511,7 +514,7 @@ def request_po_amendment_service(
         title=f"PO Amendment #{amendment.amendment_number} Pending Approval: {po.po_number}",
         message=(
             f"PO {po.po_number} amendment #{amendment.amendment_number} "
-            f"(Delta: ${delta:+,.2f}) submitted by {requested_by_user.get_full_name() or requested_by_user.email} "
+            f"(Delta: ₹{delta:+,.2f}) submitted by {requested_by_user.get_full_name() or requested_by_user.email} "
             "requires formal approval."
         ),
         target_url=f"/orders/{po.id}/",
@@ -720,7 +723,7 @@ def approve_po_amendment_service(
         title=f"Purchase Order Amended to V{po.version}: {po.po_number}",
         message=(
             f"Purchase Order {po.po_number} has been amended to Version {po.version} "
-            f"(${po.total_amount:,.2f}). Mandatory re-acknowledgement is required."
+            f"(₹{po.total_amount:,.2f}). Mandatory re-acknowledgement is required."
         ),
         target_url=f"/vendor/purchase-orders/{po.id}/",
     )
@@ -1074,7 +1077,7 @@ def submit_purchase_order_for_approval_service(
         title=f"PO Approval Required: {po.po_number}",
         message=(
             f"Purchase Order {po.po_number} for {po.vendor.legal_name} "
-            f"(${po.total_amount:,.2f}) was submitted by "
+            f"(₹{po.total_amount:,.2f}) was submitted by "
             f"{actor.get_full_name() or actor.email} and awaits your approval."
         ),
         target_url=f"/orders/{po.id}/",
@@ -1290,7 +1293,7 @@ def issue_purchase_order_service(
         notification_type=Notification.TYPE_PO_ISSUED,
         title=f"Purchase Order Issued: {po.po_number}",
         message=(
-            f"Purchase Order {po.po_number} for ${po.total_amount:,.2f} has been issued "
+            f"Purchase Order {po.po_number} for ₹{po.total_amount:,.2f} has been issued "
             "and requires formal acknowledgement."
         ),
         target_url=f"/vendor/purchase-orders/{po.id}/",
@@ -1302,7 +1305,7 @@ def issue_purchase_order_service(
             notification_type=Notification.TYPE_PO_ISSUED,
             title=f"New Purchase Order Issued: {po.po_number}",
             message=(
-                f"A new Purchase Order {po.po_number} (${po.total_amount:,.2f}) has been "
+                f"A new Purchase Order {po.po_number} (₹{po.total_amount:,.2f}) has been "
                 f"issued to {po.vendor.legal_name}."
             ),
             target_url=f"/vendor/purchase-orders/{po.id}/",

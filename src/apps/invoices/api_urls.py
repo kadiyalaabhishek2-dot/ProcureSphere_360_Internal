@@ -41,20 +41,23 @@ class CanManageSupplierInvoice(BasePermission):
         role_code = getattr(request.user, "role_code", None) or (
             request.user.role.code if getattr(request.user, "role", None) else None
         )
-        is_vendor = (
-            getattr(request.user, "is_vendor", False)
-            or role_code in [Role.VENDOR_USER, "VENDOR_USER"]
-        )
+        is_vendor = getattr(request.user, "is_vendor", False) or role_code in [
+            Role.VENDOR_USER,
+            "VENDOR_USER",
+        ]
 
         # Vendors cannot pay, run match, create line-item invoices via internal endpoint, or access match exceptions
         if is_vendor:
-            basename = getattr(view, "basename", "")
-            action = getattr(view, "action", "")
-            if "exception" in basename or "exception" in action:
+            basename = getattr(view, "basename", "") or ""
+            action = getattr(view, "action", "") or ""
+            view_name = view.__class__.__name__
+            if ("exception" in basename or "exception" in action or "MatchException" in view_name) and request.method not in SAFE_METHODS:
                 return False
-            if action in ["create_invoice", "pay_invoice", "pay", "run_match", "run_3_way_match"]:
+            if action in ["pay_invoice", "pay", "run_match", "run_3_way_match"]:
                 return False
             if request.method in SAFE_METHODS:
+                return True
+            if request.method == "POST" and (action in ["create", None, ""] or "SupplierInvoice" in view_name):
                 return True
             return False
 
@@ -119,10 +122,10 @@ class CanManageSupplierInvoice(BasePermission):
         role_code = getattr(request.user, "role_code", None) or (
             request.user.role.code if getattr(request.user, "role", None) else None
         )
-        is_vendor = (
-            getattr(request.user, "is_vendor", False)
-            or role_code in [Role.VENDOR_USER, "VENDOR_USER"]
-        )
+        is_vendor = getattr(request.user, "is_vendor", False) or role_code in [
+            Role.VENDOR_USER,
+            "VENDOR_USER",
+        ]
 
         if is_vendor:
             # Vendor can only view their own vendor invoices
@@ -180,9 +183,7 @@ class InvoiceLineSerializer(serializers.ModelSerializer):
 
     def validate_unit_price(self, value):
         if value < Decimal("0.00"):
-            raise serializers.ValidationError(
-                "Unit price cannot be less than zero or negative."
-            )
+            raise serializers.ValidationError("Unit price cannot be less than zero or negative.")
         return value
 
 
@@ -225,7 +226,11 @@ class SupplierInvoiceSerializer(serializers.ModelSerializer):
                 PurchaseOrder.STATUS_COMPLETED,
             ]:
                 raise serializers.ValidationError(
-                    {"po": [f"Cannot create invoice against PO in status '{po.status}'. Invoices require an issued purchase order."]}
+                    {
+                        "po": [
+                            f"Cannot create invoice against PO in status '{po.status}'. Invoices require an issued purchase order."
+                        ]
+                    }
                 )
         if not vendor and po:
             vendor = po.vendor
@@ -236,7 +241,11 @@ class SupplierInvoiceSerializer(serializers.ModelSerializer):
 
         if vendor and getattr(vendor, "status", None) != "ACTIVE":
             raise serializers.ValidationError(
-                {"vendor": [f"Cannot create invoice: Vendor '{vendor.legal_name}' is in status '{vendor.status}'. Vendor must be ACTIVE."]}
+                {
+                    "vendor": [
+                        f"Cannot create invoice: Vendor '{vendor.legal_name}' is in status '{vendor.status}'. Vendor must be ACTIVE."
+                    ]
+                }
             )
 
         invoice_number = attrs.get("invoice_number", getattr(self.instance, "invoice_number", None))
@@ -244,7 +253,9 @@ class SupplierInvoiceSerializer(serializers.ModelSerializer):
             clean_inv_num = str(invoice_number).strip()
             attrs["invoice_number"] = clean_inv_num
             if vendor:
-                qs = SupplierInvoice.objects.filter(vendor=vendor, invoice_number__iexact=clean_inv_num)
+                qs = SupplierInvoice.objects.filter(
+                    vendor=vendor, invoice_number__iexact=clean_inv_num
+                )
                 if self.instance:
                     qs = qs.exclude(pk=self.instance.pk)
                 if qs.exists():
@@ -291,7 +302,10 @@ class SupplierInvoiceSerializer(serializers.ModelSerializer):
                 )
             if po and total_amount:
                 from django.db.models import Sum
-                prior_inv_qs = SupplierInvoice.objects.filter(po=po).exclude(status=SupplierInvoice.STATUS_REJECTED)
+
+                prior_inv_qs = SupplierInvoice.objects.filter(po=po).exclude(
+                    status=SupplierInvoice.STATUS_REJECTED
+                )
                 if self.instance:
                     prior_inv_qs = prior_inv_qs.exclude(pk=self.instance.pk)
                 prior_sum = prior_inv_qs.aggregate(s=Sum("total_amount"))["s"] or Decimal("0.00")
@@ -317,7 +331,9 @@ class SupplierInvoiceSerializer(serializers.ModelSerializer):
 class InvoiceLineItemPayloadSerializer(serializers.Serializer):
     description = serializers.CharField(required=False, default="", allow_blank=True)
     quantity = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal("0.01"))
-    unit_price = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal("0.00"))
+    unit_price = serializers.DecimalField(
+        max_digits=12, decimal_places=2, min_value=Decimal("0.00")
+    )
     po_line_id = serializers.CharField(required=False, allow_null=True)
 
 
@@ -367,7 +383,11 @@ class SupplierInvoiceViewSet(viewsets.ModelViewSet):
 
     def perform_update(self, serializer):
         instance = self.get_object()
-        if instance.status in [SupplierInvoice.STATUS_PAID, SupplierInvoice.STATUS_READY_FOR_PAYMENT, SupplierInvoice.STATUS_APPROVAL]:
+        if instance.status in [
+            SupplierInvoice.STATUS_PAID,
+            SupplierInvoice.STATUS_READY_FOR_PAYMENT,
+            SupplierInvoice.STATUS_APPROVAL,
+        ]:
             raise serializers.ValidationError(
                 {"status": [f"Invoices in '{instance.status}' status cannot be edited."]}
             )
@@ -385,7 +405,9 @@ class SupplierInvoiceViewSet(viewsets.ModelViewSet):
                     "error": {
                         "code": "INVALID_STATE",
                         "message": f"Invoices in '{instance.status}' status cannot be deleted.",
-                        "details": {"status": [f"Invoices in '{instance.status}' status cannot be deleted."]},
+                        "details": {
+                            "status": [f"Invoices in '{instance.status}' status cannot be deleted."]
+                        },
                     }
                 },
                 status=status.HTTP_400_BAD_REQUEST,
@@ -393,7 +415,11 @@ class SupplierInvoiceViewSet(viewsets.ModelViewSet):
         return super().destroy(request, *args, **kwargs)
 
     def perform_destroy(self, instance):
-        if instance.status in [SupplierInvoice.STATUS_PAID, SupplierInvoice.STATUS_READY_FOR_PAYMENT, SupplierInvoice.STATUS_APPROVAL]:
+        if instance.status in [
+            SupplierInvoice.STATUS_PAID,
+            SupplierInvoice.STATUS_READY_FOR_PAYMENT,
+            SupplierInvoice.STATUS_APPROVAL,
+        ]:
             raise serializers.ValidationError(
                 {"status": [f"Invoices in '{instance.status}' status cannot be deleted."]}
             )
@@ -482,9 +508,14 @@ class SupplierInvoiceViewSet(viewsets.ModelViewSet):
         invoice = self.get_object()
         if invoice.status == SupplierInvoice.STATUS_PAID:
             raise serializers.ValidationError(
-                {"status": "Cannot re-run 3-way matching: Paid invoices are immutable and cannot be re-matched."}
+                {
+                    "status": "Cannot re-run 3-way matching: Paid invoices are immutable and cannot be re-matched."
+                }
             )
-        if invoice.status in [SupplierInvoice.STATUS_PAID, SupplierInvoice.STATUS_READY_FOR_PAYMENT]:
+        if invoice.status in [
+            SupplierInvoice.STATUS_PAID,
+            SupplierInvoice.STATUS_READY_FOR_PAYMENT,
+        ]:
             return Response(
                 {
                     "error": {
@@ -519,10 +550,26 @@ class SupplierInvoiceViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"], url_path="pay")
     def pay_invoice(self, request, pk=None):
+        try:
+            data = request.data
+        except Exception as parse_err:
+            return Response(
+                {
+                    "error": {
+                        "code": "VALIDATION_ERROR",
+                        "message": "Malformed JSON payload in request body.",
+                        "details": str(parse_err),
+                    }
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         invoice = self.get_object()
-        payment_reference = request.data.get("payment_reference")
-        payment_method = request.data.get("payment_method", "ACH_TRANSFER")
-        payment_date = request.data.get("payment_date")
+        payment_reference = data.get("payment_reference") if isinstance(data, dict) else None
+        payment_method = (
+            data.get("payment_method", "ACH_TRANSFER") if isinstance(data, dict) else "ACH_TRANSFER"
+        )
+        payment_date = data.get("payment_date") if isinstance(data, dict) else None
         try:
             paid_invoice = mark_invoice_paid_service(
                 invoice=invoice,
@@ -558,7 +605,10 @@ class MatchExceptionViewSet(viewsets.ModelViewSet):
         qs = self.queryset
         if not user or not user.is_authenticated:
             return qs.none()
-        if getattr(user, "is_vendor", False) or getattr(user, "role_code", None) == Role.VENDOR_USER:
+        if (
+            getattr(user, "is_vendor", False)
+            or getattr(user, "role_code", None) == Role.VENDOR_USER
+        ):
             if getattr(user, "vendor_id", None):
                 return qs.filter(invoice__vendor_id=user.vendor_id)
             return qs.none()
@@ -644,7 +694,12 @@ class MatchExceptionViewSet(viewsets.ModelViewSet):
         notes = str(request.data.get("resolution_notes", "")).strip()
         if not notes:
             return Response(
-                {"error": {"code": "VALIDATION_ERROR", "message": "Resolution notes / justification are required to resolve a match exception."}},
+                {
+                    "error": {
+                        "code": "VALIDATION_ERROR",
+                        "message": "Resolution notes / justification are required to resolve a match exception.",
+                    }
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
         action_type = request.data.get("action", "RESOLVE")

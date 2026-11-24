@@ -22,10 +22,30 @@ from apps.scorecards.models import VendorScorecard
 from apps.sourcing.models import Clarification, SourcingEvent
 from apps.vendors.models import Vendor
 
+_REDIS_CLIENT = None
+
+
+def _get_pooled_redis():
+    global _REDIS_CLIENT
+    if _REDIS_CLIENT is None:
+        redis_url = getattr(settings, "REDIS_URL", "redis://127.0.0.1:6379/0")
+        if redis_url.startswith("rediss://") and "ssl_cert_reqs" not in redis_url:
+            delimiter = "&" if "?" in redis_url else "?"
+            redis_url = f"{redis_url}{delimiter}ssl_cert_reqs=none"
+        _REDIS_CLIENT = Redis.from_url(
+            redis_url,
+            socket_connect_timeout=1.0,
+            socket_timeout=1.0,
+            retry_on_timeout=False,
+            health_check_interval=30,
+        )
+    return _REDIS_CLIENT
+
 
 def health_check_view(request):
     """
     Health check endpoint returning DB and Redis status.
+    Uses pooled Redis client with strict 1s timeout to ensure sub-second response (DEF-001 / SMK-PLT-005).
     """
     health_status = {
         "status": "healthy",
@@ -43,9 +63,9 @@ def health_check_view(request):
         health_status["database"] = "disconnected"
         health_status["status"] = "unhealthy"
 
-    # Check Redis connection safely without leaking hostnames/credentials (DEF-005)
+    # Check Redis connection safely with pooled client & strict 1s timeout (DEF-001 / SMK-PLT-005)
     try:
-        redis_client = Redis.from_url(settings.REDIS_URL, socket_timeout=2)
+        redis_client = _get_pooled_redis()
         if redis_client.ping():
             health_status["redis"] = "ok"
         else:
@@ -55,6 +75,7 @@ def health_check_view(request):
         # Check cache fallback
         try:
             from django.core.cache import cache
+
             cache.set("health_check_ping", "1", 10)
             if cache.get("health_check_ping") == "1":
                 health_status["redis"] = "ok"
@@ -100,7 +121,7 @@ def get_dashboard_url_for_user(user):
         Role.FINANCE_AP: "/finance/",
         Role.STORES_RECEIVER: "/stores/",
         Role.LEGAL_MGR: "/legal/",
-        Role.AUDITOR: "/auditor/",
+        Role.AUDITOR: "/audit/",
         Role.VENDOR_USER: "/vendor/",
     }
     return role_url_map.get(role_code, "/requester/")
@@ -111,6 +132,7 @@ def dashboard_role_required(allowed_roles):
     Enforces backend RBAC on dashboard direct URLs (resolves DEF-005).
     Raises PermissionDenied (HTTP 403) if authenticated user's role is not permitted.
     """
+
     def decorator(view_func):
         @wraps(view_func)
         def _wrapped(request, *args, **kwargs):
@@ -119,12 +141,16 @@ def dashboard_role_required(allowed_roles):
             if request.user.is_superuser:
                 return view_func(request, *args, **kwargs)
             role_code = getattr(request.user, "role_code", None) or (
-                request.user.role.code if hasattr(request.user, "role") and request.user.role else None
+                request.user.role.code
+                if hasattr(request.user, "role") and request.user.role
+                else None
             )
             if role_code not in allowed_roles:
                 raise PermissionDenied(f"Access restricted to {', '.join(allowed_roles)} role(s).")
             return view_func(request, *args, **kwargs)
+
         return _wrapped
+
     return decorator
 
 
@@ -146,6 +172,7 @@ def requester_dashboard_view(request):
     )
     if not user.is_superuser and role_code not in [Role.REQUESTER, Role.SUPER_ADMIN]:
         from django.core.exceptions import PermissionDenied
+
         raise PermissionDenied("Permission Denied: Requester access required.")
 
     my_prs = PurchaseRequisition.objects.filter(requester=user).prefetch_related(
@@ -181,6 +208,7 @@ def stores_dashboard_view(request):
     )
     if not user.is_superuser and role_code not in [Role.STORES_RECEIVER, Role.SUPER_ADMIN]:
         from django.core.exceptions import PermissionDenied
+
         raise PermissionDenied("Permission Denied: Stores & Receiving Desk access required.")
 
     from apps.receipts.views import get_stores_dashboard_data
@@ -211,12 +239,18 @@ def vendor_dashboard_view(request):
 @login_required(login_url="/login/")
 @dashboard_role_required([Role.FINANCE_AP, Role.SUPER_ADMIN])
 def finance_dashboard_view(request):
+    import time
+
+    if hasattr(request, "session") and request.session:
+        request.session["_last_activity_ts"] = time.time()
+
     user = request.user
     role_code = getattr(user, "role_code", None) or (
         user.role.code if hasattr(user, "role") and user.role else None
     )
     if not user.is_superuser and role_code not in [Role.FINANCE_AP, Role.SUPER_ADMIN]:
         from django.core.exceptions import PermissionDenied
+
         raise PermissionDenied("Permission Denied: Finance & AP Workspace access required.")
 
     from apps.budgets.models import SpendLedger
@@ -237,7 +271,11 @@ def finance_dashboard_view(request):
         or ""
     ).strip()
 
-    scoped_org = getattr(request.user, "effective_organization", None) if not (request.user.is_superuser and not request.user.organization_id) else None
+    scoped_org = (
+        getattr(request.user, "effective_organization", None)
+        if not (request.user.is_superuser and not request.user.organization_id)
+        else None
+    )
 
     departments = Department.objects.all().order_by("name")
     cost_centers = CostCenter.objects.select_related("department").all().order_by("code")
@@ -311,7 +349,9 @@ def finance_dashboard_view(request):
         .select_related("department", "cost_center", "requester")
         .order_by("-updated_at")
     )
-    from apps.approvals.models import ApprovalAction
+    from apps.approvals.models import ApprovalAction, ApprovalPolicy, ApprovalStep
+    from apps.approvals.services import evaluate_approval_chain
+
     user_approved_pr_ids = ApprovalAction.objects.filter(
         actor=request.user,
         target_model_name="PurchaseRequisition",
@@ -326,47 +366,15 @@ def finance_dashboard_view(request):
             ]
         )
         .exclude(id__in=user_approved_pr_ids)
-        .select_related("department", "department__organization", "cost_center", "cost_center__department__organization", "requester")
+        .select_related(
+            "department",
+            "department__organization",
+            "cost_center",
+            "cost_center__department__organization",
+            "requester",
+        )
         .order_by("-updated_at")
     )
-
-    from django.db.models import Count
-
-    from apps.approvals.models import ApprovalPolicy
-    from apps.approvals.services import evaluate_approval_chain
-
-    candidate_pr_ids = list(pending_finance_prs.values_list("id", flat=True))
-    finance_pr_ids = []
-    if candidate_pr_ids:
-        step_counts = {
-            str(k): v
-            for k, v in ApprovalAction.objects.filter(
-                target_object_id__in=[str(pid) for pid in candidate_pr_ids],
-                target_model_name="PurchaseRequisition",
-                action=ApprovalAction.ACTION_APPROVE,
-            )
-            .values("target_object_id")
-            .annotate(cnt=Count("id"))
-            .values_list("target_object_id", "cnt")
-        }
-        for cand in pending_finance_prs:
-            cand_org = (
-                getattr(getattr(cand, "department", None), "organization", None)
-                or getattr(getattr(getattr(cand, "cost_center", None), "department", None), "organization", None)
-                or getattr(cand.requester, "effective_organization", None)
-            )
-            chain = evaluate_approval_chain(
-                module=ApprovalPolicy.MODULE_PR,
-                amount=cand.total_amount,
-                department=cand.department,
-                cost_center=cand.cost_center,
-                organization=cand_org,
-            )
-            idx = step_counts.get(str(cand.id), 0)
-            if chain and idx < len(chain):
-                if chain[idx]["approver_role"].code == Role.FINANCE_AP:
-                    finance_pr_ids.append(cand.id)
-    pending_finance_prs = pending_finance_prs.filter(id__in=finance_pr_ids)
 
     ready_for_payment_qs = SupplierInvoice.objects.filter(
         status=SupplierInvoice.STATUS_READY_FOR_PAYMENT
@@ -374,6 +382,7 @@ def finance_dashboard_view(request):
     committed_spend_qs = SpendLedger.objects.filter(entry_type=SpendLedger.ENTRY_COMMITMENT)
     actual_spend_qs = SpendLedger.objects.filter(entry_type=SpendLedger.ENTRY_ACTUAL)
 
+    # Apply organizational scoping before any chain evaluation
     if scoped_org:
         open_match_exceptions = open_match_exceptions.filter(
             Q(invoice__po__cost_center__department__organization=scoped_org)
@@ -402,7 +411,9 @@ def finance_dashboard_view(request):
 
     all_cost_centers = list(cost_centers)
     if selected_dept_obj:
-        filtered_cost_centers = [cc for cc in all_cost_centers if cc.department_id == selected_dept_obj.id]
+        filtered_cost_centers = [
+            cc for cc in all_cost_centers if cc.department_id == selected_dept_obj.id
+        ]
     else:
         filtered_cost_centers = all_cost_centers
 
@@ -438,30 +449,75 @@ def finance_dashboard_view(request):
             | Q(invoice__po__requisition__cost_center_id=selected_cc_id)
         ).distinct()
         ready_for_payment_qs = ready_for_payment_qs.filter(
-            Q(po__cost_center_id=selected_cc_id)
-            | Q(po__requisition__cost_center_id=selected_cc_id)
+            Q(po__cost_center_id=selected_cc_id) | Q(po__requisition__cost_center_id=selected_cc_id)
         ).distinct()
-        committed_spend_qs = committed_spend_qs.filter(
-            budget__cost_center_id=selected_cc_id
-        )
-        actual_spend_qs = actual_spend_qs.filter(
-            budget__cost_center_id=selected_cc_id
-        )
+        committed_spend_qs = committed_spend_qs.filter(budget__cost_center_id=selected_cc_id)
+        actual_spend_qs = actual_spend_qs.filter(budget__cost_center_id=selected_cc_id)
 
-    committed_spend = (
-        committed_spend_qs.aggregate(total=Sum("amount"))["total"] or 0
+    # Evaluate approval chain eligibility for pending_finance_prs efficiently
+    has_finance_step = ApprovalStep.objects.filter(
+        policy__module=ApprovalPolicy.MODULE_PR,
+        policy__is_active=True,
+        approver_role__code=Role.FINANCE_AP,
+    ).exists()
+
+    if not has_finance_step:
+        pending_finance_prs = pending_finance_prs.none()
+    else:
+        candidate_prs = list(pending_finance_prs[:50])
+        candidate_pr_ids = [cand.id for cand in candidate_prs]
+        finance_pr_ids = []
+        if candidate_pr_ids:
+            step_counts = {
+                str(k): v
+                for k, v in ApprovalAction.objects.filter(
+                    target_object_id__in=[str(pid) for pid in candidate_pr_ids],
+                    target_model_name="PurchaseRequisition",
+                    action=ApprovalAction.ACTION_APPROVE,
+                )
+                .values("target_object_id")
+                .annotate(cnt=Count("id"))
+                .values_list("target_object_id", "cnt")
+            }
+            for cand in candidate_prs:
+                cand_org = (
+                    getattr(getattr(cand, "department", None), "organization", None)
+                    or getattr(
+                        getattr(getattr(cand, "cost_center", None), "department", None),
+                        "organization",
+                        None,
+                    )
+                    or getattr(cand.requester, "effective_organization", None)
+                )
+                chain = evaluate_approval_chain(
+                    module=ApprovalPolicy.MODULE_PR,
+                    amount=cand.total_amount,
+                    department=cand.department,
+                    cost_center=cand.cost_center,
+                    organization=cand_org,
+                )
+                idx = step_counts.get(str(cand.id), 0)
+                if chain and idx < len(chain):
+                    if chain[idx]["approver_role"].code == Role.FINANCE_AP:
+                        finance_pr_ids.append(cand.id)
+            pending_finance_prs = pending_finance_prs.filter(id__in=finance_pr_ids)
+        else:
+            pending_finance_prs = pending_finance_prs.none()
+
+    committed_spend = committed_spend_qs.aggregate(total=Sum("amount"))["total"] or 0
+    actual_spend = actual_spend_qs.aggregate(total=Sum("amount"))["total"] or 0
+
+    user_org_name = (
+        scoped_org.name
+        if scoped_org
+        else ("Global Enterprise" if request.user.is_superuser else "")
     )
-    actual_spend = (
-        actual_spend_qs.aggregate(total=Sum("amount"))["total"] or 0
-    )
-
-    user_org_name = scoped_org.name if scoped_org else ("Global Enterprise" if request.user.is_superuser else "")
-
-    total_pending_exceptions = open_match_exceptions.count()
     from django.core.paginator import Paginator
+
     exceptions_paginator = Paginator(open_match_exceptions, 10)
     page_num = request.GET.get("page", 1)
     exceptions_page = exceptions_paginator.get_page(page_num)
+    total_pending_exceptions = exceptions_paginator.count
 
     context = {
         "metrics": {
@@ -484,7 +540,9 @@ def finance_dashboard_view(request):
         "selected_dept_obj": selected_dept_obj,
         "selected_cc_obj": selected_cc_obj,
         "user_org_name": user_org_name,
-        "unread_notifications_count": Notification.objects.filter(recipient=request.user, is_read=False).count(),
+        "unread_notifications_count": Notification.objects.filter(
+            recipient=request.user, is_read=False
+        ).count(),
     }
     return render(request, "pages/dashboards/finance_dashboard.html", context)
 
@@ -498,6 +556,7 @@ def procurement_dashboard_view(request):
     )
     if not user.is_superuser and role_code not in [Role.PROC_EXEC, Role.SUPER_ADMIN]:
         from django.core.exceptions import PermissionDenied
+
         raise PermissionDenied("Permission Denied: Procurement Executive access required.")
 
     from apps.notifications.models import Notification
@@ -509,9 +568,13 @@ def procurement_dashboard_view(request):
     now = timezone.now()
     _proc_org = getattr(user, "effective_organization", None)
     _event_org_filter = (
-        Q(requisition__department__organization=_proc_org)
-        | Q(requisition__isnull=True, created_by__organization=_proc_org)
-    ) if _proc_org and not getattr(user, "is_superuser", False) else Q()
+        (
+            Q(requisition__department__organization=_proc_org)
+            | Q(requisition__isnull=True, created_by__organization=_proc_org)
+        )
+        if _proc_org and not getattr(user, "is_superuser", False)
+        else Q()
+    )
     closing_soon = (
         SourcingEvent.objects.filter(
             _event_org_filter,
@@ -529,7 +592,7 @@ def procurement_dashboard_view(request):
             SourcingEvent.STATUS_TECHNICAL_REVIEW,
             SourcingEvent.STATUS_COMMERCIAL_REVIEW,
             SourcingEvent.STATUS_AWARD_APPROVAL,
-        ]
+        ],
     ).order_by("-updated_at")[:10]
     attention_vendors = (
         get_governance_vendor_queryset(user=request.user)
@@ -556,10 +619,14 @@ def procurement_dashboard_view(request):
     )
     avg_scorecard = VendorScorecard.objects.aggregate(avg=Avg("composite_score"))["avg"]
     _prs_org_filter = (
-        Q(department__organization=_proc_org)
-        | Q(cost_center__department__organization=_proc_org)
-        | Q(requester__organization=_proc_org)
-    ) if _proc_org and not getattr(user, "is_superuser", False) else Q()
+        (
+            Q(department__organization=_proc_org)
+            | Q(cost_center__department__organization=_proc_org)
+            | Q(requester__organization=_proc_org)
+        )
+        if _proc_org and not getattr(user, "is_superuser", False)
+        else Q()
+    )
     ready_prs_count = PurchaseRequisition.objects.filter(
         _prs_org_filter,
         status=PurchaseRequisition.STATUS_APPROVED,
@@ -579,9 +646,7 @@ def procurement_dashboard_view(request):
         .exclude(event__status__in=["AWARDED", "CANCELLED"])
         .count(),
         "avg_scorecard": round(float(avg_scorecard), 1) if avg_scorecard is not None else None,
-        "unread_notifications": Notification.objects.filter(
-            recipient=user, is_read=False
-        ).count(),
+        "unread_notifications": Notification.objects.filter(recipient=user, is_read=False).count(),
         "closing_soon": closing_soon,
         "action_queue": action_queue,
         "attention_vendors": attention_vendors,
@@ -607,6 +672,7 @@ def approver_dashboard_view(request):
     )
     if not user.is_superuser and role_code not in [Role.DEPT_APPROVER, Role.SUPER_ADMIN]:
         from django.core.exceptions import PermissionDenied
+
         raise PermissionDenied("Permission Denied: Department Approver access required.")
 
     user_department = getattr(user, "department", None)
@@ -614,17 +680,11 @@ def approver_dashboard_view(request):
     from apps.organization.models import CostCenter, Department, FiscalPeriod
 
     if not user_department:
-        managed_cc = (
-            CostCenter.objects.filter(manager=user)
-            .select_related("department")
-            .first()
-        )
+        managed_cc = CostCenter.objects.filter(manager=user).select_related("department").first()
         if managed_cc and managed_cc.department:
             user_department = managed_cc.department
         elif getattr(user, "organization", None):
-            user_department = Department.objects.filter(
-                organization=user.organization
-            ).first()
+            user_department = Department.objects.filter(organization=user.organization).first()
 
     if not user_department:
         messages.warning(
@@ -643,22 +703,28 @@ def approver_dashboard_view(request):
             users__is_active=True,
         ).exclude(id=user_department.id)
 
-        dept_prs = PurchaseRequisition.objects.filter(
-            Q(department=user_department)
-            | Q(cost_center__manager=user)
-            | (
-                Q(department__organization=user_org)
-                & ~Q(department__in=depts_with_approvers)
+        dept_prs = (
+            PurchaseRequisition.objects.filter(
+                Q(department=user_department)
+                | Q(cost_center__manager=user)
+                | (Q(department__organization=user_org) & ~Q(department__in=depts_with_approvers))
             )
-        ).exclude(status=PurchaseRequisition.STATUS_DRAFT).distinct()
+            .exclude(status=PurchaseRequisition.STATUS_DRAFT)
+            .distinct()
+        )
     elif user_org:
-        dept_prs = PurchaseRequisition.objects.filter(
-            Q(department__organization=user_org) | Q(cost_center__manager=user)
-        ).exclude(status=PurchaseRequisition.STATUS_DRAFT).distinct()
+        dept_prs = (
+            PurchaseRequisition.objects.filter(
+                Q(department__organization=user_org) | Q(cost_center__manager=user)
+            )
+            .exclude(status=PurchaseRequisition.STATUS_DRAFT)
+            .distinct()
+        )
     else:
         dept_prs = PurchaseRequisition.objects.none()
 
     from apps.approvals.models import ApprovalAction
+
     user_approved_pr_ids = ApprovalAction.objects.filter(
         actor=user,
         target_model_name="PurchaseRequisition",
@@ -682,9 +748,7 @@ def approver_dashboard_view(request):
     )
     period_filter = Q(start_date__lte=today_date, end_date__gte=today_date, is_closed=False)
     if user_org:
-        has_open_period = FiscalPeriod.objects.filter(
-            period_filter, organization=user_org
-        ).exists()
+        has_open_period = FiscalPeriod.objects.filter(period_filter, organization=user_org).exists()
     else:
         has_open_period = FiscalPeriod.objects.filter(period_filter).exists()
 
@@ -692,10 +756,7 @@ def approver_dashboard_view(request):
         dept_ccs = CostCenter.objects.filter(
             Q(department=user_department)
             | Q(manager=user)
-            | (
-                Q(department__organization=user_org)
-                & ~Q(department__in=depts_with_approvers)
-            )
+            | (Q(department__organization=user_org) & ~Q(department__in=depts_with_approvers))
         ).distinct()
     elif user_org:
         dept_ccs = CostCenter.objects.filter(department__organization=user_org)
@@ -727,9 +788,7 @@ def approver_dashboard_view(request):
     available_budget = max(Decimal("0.00"), raw_available_budget)
 
     is_budget_overdrawn = raw_available_budget < Decimal("0.00")
-    budget_overrun_amount = (
-        abs(raw_available_budget) if is_budget_overdrawn else Decimal("0.00")
-    )
+    budget_overrun_amount = abs(raw_available_budget) if is_budget_overdrawn else Decimal("0.00")
 
     # Budget validation for pending PR queue to prevent unauthorized approval of over-budget or unfunded PRs
     pending_list = list(pending_prs_qs[:10])
@@ -821,10 +880,14 @@ def superadmin_dashboard_view(request):
     orgs_qs = Organization.objects.select_related("admin_user").order_by("code")
 
     if scoped_org:
-        users_qs = users_qs.filter(Q(organization=scoped_org) | Q(department__organization=scoped_org))
+        users_qs = users_qs.filter(
+            Q(organization=scoped_org) | Q(department__organization=scoped_org)
+        )
         budgets_qs = budgets_qs.filter(cost_center__department__organization=scoped_org)
         prs_qs = prs_qs.filter(department__organization=scoped_org)
-        exceptions_qs = exceptions_qs.filter(invoice__po__requisition__department__organization=scoped_org)
+        exceptions_qs = exceptions_qs.filter(
+            invoice__po__requisition__department__organization=scoped_org
+        )
         audits_qs = audits_qs.filter(
             Q(actor__organization=scoped_org) | Q(actor__department__organization=scoped_org)
         )
@@ -844,7 +907,9 @@ def superadmin_dashboard_view(request):
         "scoped_org": scoped_org,
         "is_global_superadmin": is_global_superadmin,
         "can_add_organization": is_global_superadmin,
-        "total_organizations": Organization.objects.count() if is_global_superadmin else (1 if scoped_org else 0),
+        "total_organizations": (
+            Organization.objects.count() if is_global_superadmin else (1 if scoped_org else 0)
+        ),
         "active_organizations": (
             Organization.objects.filter(is_active=True).count()
             if is_global_superadmin
@@ -949,10 +1014,12 @@ def custom_api_404_view(request, *args, **kwargs):
 def custom_404_view(request, exception=None):
     if request.path == "/favicon.ico":
         from django.shortcuts import redirect
+
         return redirect("/static/icons/favicon.ico")
 
     if request.path.lower() in ("/quit", "/quit/"):
         from django.shortcuts import redirect
+
         return redirect("/")
 
     # Auto-redirect non-slash URLs if the slashed path resolves (replaces default CommonMiddleware behavior bypassed by catch-all)
@@ -960,6 +1027,7 @@ def custom_404_view(request, exception=None):
         slash_path = request.path + "/"
         from django.shortcuts import redirect
         from django.urls import Resolver404, resolve
+
         try:
             match = resolve(slash_path)
             if match.url_name != "custom_404_fallback":
@@ -979,7 +1047,30 @@ def custom_404_view(request, exception=None):
             },
             status=404,
         )
-    return render(request, "404.html", status=404)
+    user = getattr(request, "user", None)
+    role_code = None
+    target_dashboard_url = "/dashboard/"
+    if user and user.is_authenticated:
+        from apps.accounts.models import Role
+
+        role_code = getattr(user, "role_code", None) or (
+            user.role.code if getattr(user, "role", None) else None
+        )
+        if role_code == Role.LEGAL_MGR:
+            target_dashboard_url = "/legal/"
+        else:
+            try:
+                target_dashboard_url = get_dashboard_url_for_user(user)
+            except Exception:
+                target_dashboard_url = "/dashboard/"
+    else:
+        target_dashboard_url = "/login/"
+
+    context = {
+        "role_code": role_code,
+        "target_dashboard_url": target_dashboard_url,
+    }
+    return render(request, "404.html", context, status=404)
 
 
 def custom_500_view(request):
@@ -1047,7 +1138,7 @@ def protected_media_view(request, file_path):
         return HttpResponseForbidden("Access denied: Invalid file path.")
 
     # 2. RBAC and Ownership Enforcement (evaluated before file existence to prevent enumeration & redirects)
-    if user.is_superuser or role_code == Role.SUPER_ADMIN:
+    if user.is_superuser or role_code in (Role.SUPER_ADMIN, "SUPER_ADMIN", "ADMIN"):
         pass  # Super Admin has full administrative access
     elif role_code == Role.VENDOR_USER:
         vendor = getattr(user, "vendor", None)
@@ -1065,23 +1156,57 @@ def protected_media_view(request, file_path):
         ).exists()
 
         if not (is_vendor_doc or is_bid_att or str(vendor.id) in normalized_path):
-            return HttpResponseForbidden("Access denied: Vendors may only access their own documents.")
+            return HttpResponseForbidden(
+                "Access denied: Vendors may only access their own documents."
+            )
     elif role_code in [Role.REQUESTER, Role.DEPT_APPROVER, Role.STORES_RECEIVER]:
         norm_lower = normalized_path.lower()
         if "contracts" in norm_lower:
-            return HttpResponseForbidden("Access denied: Legal contracts are restricted to Legal and Procurement.")
+            return HttpResponseForbidden(
+                "Access denied: Legal contracts are restricted to Legal and Procurement."
+            )
         if "vendor_docs" in norm_lower or "vendor_documents" in norm_lower or "kyc" in norm_lower:
-            return HttpResponseForbidden("Access denied: Vendor KYC records are restricted to Procurement and Legal.")
-    elif role_code in [Role.PROC_EXEC, Role.PROC_MGR, Role.LEGAL_MGR, Role.FINANCE_AP, Role.AUDITOR]:
+            return HttpResponseForbidden(
+                "Access denied: Vendor KYC records are restricted to Procurement and Legal."
+            )
+    elif role_code in [
+        Role.PROC_EXEC,
+        Role.PROC_MGR,
+        Role.LEGAL_MGR,
+        Role.FINANCE_AP,
+        Role.AUDITOR,
+    ]:
         pass
 
     full_path = os.path.join(settings.MEDIA_ROOT, normalized_path)
     if not os.path.exists(full_path) or not os.path.isfile(full_path):
+        base_name = os.path.basename(normalized_path)
+        # Resilient fallback: Check if file belongs to a VendorDocument and stream directly
+        if "vendor" in normalized_path.lower() or "kyc" in normalized_path.lower():
+            try:
+                from apps.vendors.models import VendorDocument
+
+                doc = (
+                    VendorDocument.objects.filter(file__endswith=base_name)
+                    .select_related("vendor")
+                    .first()
+                    or VendorDocument.objects.filter(file__icontains=base_name)
+                    .select_related("vendor")
+                    .first()
+                )
+                if doc:
+                    from apps.vendors.views import vendor_document_download_view
+
+                    return vendor_document_download_view(request, doc.vendor.id, doc.id)
+            except Exception:
+                pass
         raise Http404("Document not found.")
 
     content_type, _ = mimetypes.guess_type(full_path)
     filename = os.path.basename(full_path)
-    response = FileResponse(open(full_path, "rb"), content_type=content_type or "application/octet-stream")
+    response = FileResponse(
+        open(full_path, "rb"), content_type=content_type or "application/octet-stream"
+    )
     response["Content-Disposition"] = f'inline; filename="{filename}"'
     return response
 
@@ -1109,4 +1234,3 @@ def protected_vendor_document_view(request, file_path):
         return protected_media_view(request, path_alternate)
 
     return protected_media_view(request, path_preferred)
-

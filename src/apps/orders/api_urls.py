@@ -79,6 +79,34 @@ class CanManagePurchaseOrder(BasePermission):
             Role.PROC_EXEC,
         ]
 
+    def has_object_permission(self, request, view, obj):
+        if not request.user or not request.user.is_authenticated:
+            return False
+        if request.user.is_superuser:
+            return True
+        role_code = getattr(request.user, "role_code", None) or (
+            request.user.role.code if getattr(request.user, "role", None) else None
+        )
+        is_vendor = (
+            getattr(request.user, "is_vendor", False)
+            or role_code == Role.VENDOR_USER
+        )
+        if is_vendor:
+            user_vendor_id = getattr(request.user, "vendor_id", None)
+            if not user_vendor_id or user_vendor_id != obj.vendor_id:
+                return False
+            if request.method in SAFE_METHODS:
+                return obj.status in [
+                    PurchaseOrder.STATUS_ISSUED,
+                    PurchaseOrder.STATUS_ACKNOWLEDGED,
+                    PurchaseOrder.STATUS_PARTIAL_RECEIPT,
+                    PurchaseOrder.STATUS_COMPLETED,
+                ]
+            if view.action in ("acknowledge", "vendor_reject"):
+                return obj.status == PurchaseOrder.STATUS_ISSUED
+            return False
+        return True
+
 
 class POLineSerializer(serializers.ModelSerializer):
     remaining_quantity = serializers.DecimalField(
@@ -326,7 +354,7 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
                 )
 
         if self.instance is None:
-            lines_data = self.initial_data.get("lines")
+            lines_data = self.initial_data.get("lines") or self.initial_data.get("line_items")
             if not lines_data or not isinstance(lines_data, list) or len(lines_data) == 0:
                 raise serializers.ValidationError(
                     {"lines": ["A purchase order requires at least one line item."]}
@@ -380,7 +408,7 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
                 validated_data["po_number"] = generate_document_number(
                     PurchaseOrder, "po_number", "PO"
                 )
-            lines_data = self.initial_data.get("lines", [])
+            lines_data = self.initial_data.get("lines") or self.initial_data.get("line_items") or []
             po = super().create(validated_data)
             if lines_data and isinstance(lines_data, list):
                 subtotal = Decimal("0.00")
@@ -508,9 +536,48 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
                 )
             raise
 
+    def get_object(self):
+        lookup_url_kwarg = self.lookup_url_kwarg or self.lookup_field
+        lookup_val = self.kwargs.get(lookup_url_kwarg)
+
+        import uuid
+        is_valid_uuid = False
+        try:
+            uuid.UUID(str(lookup_val))
+            is_valid_uuid = True
+        except (ValueError, AttributeError, TypeError):
+            is_valid_uuid = False
+
+        from django.db.models import Q
+        base_qs = scope_purchase_orders_queryset(self.queryset, self.request.user)
+        if is_valid_uuid:
+            obj = base_qs.filter(Q(pk=lookup_val) | Q(po_number__iexact=str(lookup_val))).first()
+        else:
+            obj = base_qs.filter(po_number__iexact=str(lookup_val)).first()
+
+        if not obj:
+            unrestricted_qs = PurchaseOrder.objects.all()
+            if is_valid_uuid:
+                unrestricted_obj = unrestricted_qs.filter(Q(pk=lookup_val) | Q(po_number__iexact=str(lookup_val))).first()
+            else:
+                unrestricted_obj = unrestricted_qs.filter(po_number__iexact=str(lookup_val)).first()
+
+            if unrestricted_obj:
+                from rest_framework.exceptions import PermissionDenied
+                raise PermissionDenied("You do not have permission to access this Purchase Order.")
+
+            from rest_framework.exceptions import NotFound
+            raise NotFound(f"Purchase Order '{lookup_val}' not found.")
+
+        self.check_object_permissions(self.request, obj)
+        return obj
+
     def get_queryset(self):
         user = self.request.user
         qs = scope_purchase_orders_queryset(self.queryset, user)
+
+        if getattr(self, "action", None) and self.action != "list":
+            return qs
 
         # Filter by search param
         search_query = self.request.query_params.get("search", "").strip()
@@ -845,8 +912,19 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path="issue")
     def issue(self, request, pk=None):
         """APPROVED -> ISSUED. Notifies the vendor and requester."""
-        # DEF-007: Standardize lookup through get_object() to ensure uniform scoping and state checks
+        # DEF-009: Standardize lookup through get_object() and enforce invalid transition check (HTTP 400 on DRAFT)
         po = self.get_object()
+        if po.status != PurchaseOrder.STATUS_APPROVED:
+            return Response(
+                {
+                    "error": {
+                        "code": "INVALID_TRANSITION",
+                        "message": f"Cannot issue PO in status '{po.status}'. Must be APPROVED.",
+                        "details": {"status": [f"Cannot issue PO in status '{po.status}'. Must be APPROVED."]},
+                    }
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         return self._run_lifecycle_action(
             issue_purchase_order_service, po=po, actor=request.user
         )
@@ -875,8 +953,36 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path="vendor-reject")
     def vendor_reject(self, request, pk=None):
         """Vendor rejects an ISSUED purchase order with a mandatory reason."""
-        po = self.get_object()
+        po = PurchaseOrder.objects.filter(pk=pk).first()
+        if not po:
+            return Response(
+                {"error": {"code": "NOT_FOUND", "message": f"Purchase Order '{pk}' not found."}},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        is_vendor = getattr(request.user, "is_vendor", False) or getattr(request.user, "role_code", None) == Role.VENDOR_USER
+        if not is_vendor and not request.user.is_superuser:
+            return Response(
+                {"error": {"code": "PERMISSION_DENIED", "message": "Only the assigned vendor user can reject this purchase order."}},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if is_vendor:
+            user_vendor_id = getattr(request.user, "vendor_id", None)
+            if (not user_vendor_id or user_vendor_id != po.vendor_id) and not request.user.is_superuser:
+                return Response(
+                    {"error": {"code": "PERMISSION_DENIED", "message": "You can only reject purchase orders issued to your vendor."}},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            if po.status != PurchaseOrder.STATUS_ISSUED and not request.user.is_superuser:
+                return Response(
+                    {"error": {"code": "PERMISSION_DENIED", "message": f"Cannot reject Purchase Order in status '{po.status}'. PO must be in ISSUED status."}},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
         reason = str(request.data.get("reason", "")).strip()
+        if not reason:
+            return Response(
+                {"error": {"code": "VALIDATION_ERROR", "message": "Rejection reason is mandatory."}},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         return self._run_lifecycle_action(
             vendor_reject_purchase_order_service,
             po=po,
@@ -886,18 +992,30 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"], url_path="acknowledge")
     def acknowledge(self, request, pk=None):
-        po = self.get_object()
+        po = PurchaseOrder.objects.filter(pk=pk).first()
+        if not po:
+            return Response(
+                {"error": {"code": "NOT_FOUND", "message": f"Purchase Order '{pk}' not found."}},
+                status=status.HTTP_404_NOT_FOUND,
+            )
         is_vendor = getattr(request.user, "is_vendor", False) or getattr(request.user, "role_code", None) == Role.VENDOR_USER
         if not is_vendor and not request.user.is_superuser:
             return Response(
                 {"error": {"code": "PERMISSION_DENIED", "message": "Only the assigned vendor user can acknowledge this purchase order."}},
                 status=status.HTTP_403_FORBIDDEN,
             )
-        if is_vendor and getattr(request.user, "vendor_id", None) != po.vendor_id and not request.user.is_superuser:
-            return Response(
-                {"error": {"code": "PERMISSION_DENIED", "message": "You can only acknowledge purchase orders issued to your vendor."}},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+        if is_vendor:
+            user_vendor_id = getattr(request.user, "vendor_id", None)
+            if (not user_vendor_id or user_vendor_id != po.vendor_id) and not request.user.is_superuser:
+                return Response(
+                    {"error": {"code": "PERMISSION_DENIED", "message": "You can only acknowledge purchase orders issued to your vendor."}},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            if po.status != PurchaseOrder.STATUS_ISSUED and not request.user.is_superuser:
+                return Response(
+                    {"error": {"code": "PERMISSION_DENIED", "message": f"Cannot acknowledge Purchase Order in status '{po.status}'. PO must be in ISSUED status."}},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
         notes = request.data.get("acknowledgement_notes", request.data.get("notes", ""))
         try:
             updated_po = acknowledge_purchase_order_service(
@@ -943,7 +1061,7 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        raw_lines = request.data.get("lines")
+        raw_lines = request.data.get("lines") or request.data.get("line_items")
         if raw_lines and isinstance(raw_lines, list):
             for idx, line in enumerate(raw_lines):
                 if not isinstance(line, dict):
@@ -966,6 +1084,7 @@ class PurchaseOrderViewSet(viewsets.ModelViewSet):
         else:
             lines = [
                 {
+                    "id": str(line.id),
                     "item_description": line.item_description,
                     "quantity": line.quantity,
                     "unit_price": line.unit_price,

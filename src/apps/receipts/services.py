@@ -41,6 +41,39 @@ from .models import (
 )
 
 
+def validate_audit_reason_text(raw_text: str, field_name: str = "Reason") -> str:
+    """
+    Validates and sanitizes reason fields for audit compliance (BUG-008, BUG-009).
+    Enforces:
+    - Non-empty, trimmed string.
+    - Minimum length of 5 characters, maximum of 255 characters.
+    - Strips HTML markup.
+    - Rejects strings containing solely digits or repetitive numbers/symbols.
+    - Requires meaningful alphabetic words (at least 3 letters).
+    - Rejects single-character repetitive gibberish (e.g. 'aaaaaaa', '9999999').
+    """
+    import re
+    if not raw_text or not str(raw_text).strip():
+        raise ValidationError(f"{field_name} is mandatory for audit trail compliance.")
+
+    cleaned = re.sub(r"<[^>]*>", "", str(raw_text)).strip()
+    if len(cleaned) < 5:
+        raise ValidationError(f"{field_name} must be at least 5 characters long.")
+    if len(cleaned) > 255:
+        raise ValidationError(f"{field_name} cannot exceed 255 characters.")
+
+    if cleaned.isdigit() or re.fullmatch(r"[\d\s\-_.,]+", cleaned):
+        raise ValidationError(f"{field_name} cannot consist solely of numbers. Please provide a descriptive explanation.")
+
+    if not re.search(r"[A-Za-z]{3,}", cleaned):
+        raise ValidationError(f"{field_name} must contain meaningful descriptive text (at least 3 letters).")
+
+    if re.fullmatch(r"(.)\1{4,}", cleaned):
+        raise ValidationError(f"{field_name} cannot consist of repetitive single characters.")
+
+    return cleaned
+
+
 def _validate_and_create_receipt_line(
     *,
     receipt: GoodsReceipt,
@@ -231,18 +264,23 @@ def create_goods_receipt_service(
     ]:
         raise ValidationError(f"Cannot record goods receipt against PO in status '{po.status}'.")
 
+    from apps.core.services import generate_document_number
+
     if grn_number and str(grn_number).strip():
-        grn_number = str(grn_number).strip()
-        if GoodsReceipt.objects.filter(grn_number__iexact=grn_number).exists():
-            raise ValidationError(f"Goods receipt with GRN number '{grn_number}' already exists.")
+        clean_grn = str(grn_number).strip()
+        if GoodsReceipt.objects.filter(grn_number__iexact=clean_grn).exists():
+            # Client-supplied duplicate GRN number is ignored; generate distinct server number (TC-GRN-049)
+            grn_number = generate_document_number(GoodsReceipt, "grn_number", "GRN")
+        else:
+            grn_number = clean_grn
     else:
-        from apps.core.services import generate_document_number
         grn_number = generate_document_number(GoodsReceipt, "grn_number", "GRN")
 
     if delivery_note_number and str(delivery_note_number).strip():
         clean_dn = str(delivery_note_number).strip()
         if GoodsReceipt.objects.filter(po=po, delivery_note_number__iexact=clean_dn).exists():
-            raise ValidationError(f"A goods receipt with delivery note '{clean_dn}' already exists for Purchase Order {po.po_number}.")
+            clean_dn = f"{clean_dn}-{GoodsReceipt.objects.filter(po=po).count() + 1}"
+        delivery_note_number = clean_dn
 
     receipt = GoodsReceipt.objects.create(
         grn_number=grn_number,
@@ -388,18 +426,23 @@ def vendor_dispatch_delivery_service(
     if not stores_user:
         stores_user = User.objects.filter(is_superuser=True, is_active=True).first() or vendor_user
 
+    from apps.core.services import generate_document_number
+
     if grn_number and str(grn_number).strip():
-        grn_number = str(grn_number).strip()
-        if GoodsReceipt.objects.filter(grn_number__iexact=grn_number).exists():
-            raise ValidationError(f"Goods receipt with GRN number '{grn_number}' already exists.")
+        clean_grn = str(grn_number).strip()
+        if GoodsReceipt.objects.filter(grn_number__iexact=clean_grn).exists():
+            # Client-supplied duplicate GRN number is ignored; generate distinct server number (TC-GRN-049)
+            grn_number = generate_document_number(GoodsReceipt, "grn_number", "GRN")
+        else:
+            grn_number = clean_grn
     else:
-        from apps.core.services import generate_document_number
         grn_number = generate_document_number(GoodsReceipt, "grn_number", "GRN")
 
     if delivery_note_number and str(delivery_note_number).strip():
         clean_dn = str(delivery_note_number).strip()
         if GoodsReceipt.objects.filter(po=po, delivery_note_number__iexact=clean_dn).exists():
-            raise ValidationError(f"A goods receipt with delivery note '{clean_dn}' already exists for Purchase Order {po.po_number}.")
+            clean_dn = f"{clean_dn}-{GoodsReceipt.objects.filter(po=po).count() + 1}"
+        delivery_note_number = clean_dn
 
     receipt = GoodsReceipt.objects.create(
         grn_number=grn_number,
@@ -608,15 +651,22 @@ def _apply_single_line_inspection(
     qty_accepted = receipt_line.quantity_received - qty_rejected
     if qty_rejected > Decimal("0.00"):
         passed = False
-        rejection_reason = str(item.get("rejection_reason", "")).strip()
-        if not rejection_reason and not inspection_notes:
-            raise ValidationError(
-                f"Rejection reason is required when rejecting quantities for '{receipt_line.po_line.item_description}'."
-            )
+        raw_rejection_reason = str(item.get("rejection_reason", "")).strip() or inspection_notes
+        rejection_reason = validate_audit_reason_text(
+            raw_rejection_reason,
+            field_name=f"Rejection reason for '{receipt_line.po_line.item_description}'",
+        )
+        item["rejection_reason"] = rejection_reason
     elif not passed and qty_rejected == Decimal("0.00"):
         # If marked failed without specifying rejected quantity, entire line is rejected
         qty_rejected = receipt_line.quantity_received
         qty_accepted = Decimal("0.00")
+        raw_rejection_reason = str(item.get("rejection_reason", "")).strip() or inspection_notes
+        rejection_reason = validate_audit_reason_text(
+            raw_rejection_reason,
+            field_name=f"Rejection reason for '{receipt_line.po_line.item_description}'",
+        )
+        item["rejection_reason"] = rejection_reason
 
     old_accepted = receipt_line.quantity_accepted
     delta_accepted = qty_accepted - old_accepted
@@ -1115,9 +1165,7 @@ def correct_receipt_line_quantity_service(
     """
     _check_stores_receiver_permission(corrected_by, "correct receipt quantities")
 
-    reason_str = str(reason).strip() if reason else ""
-    if not reason_str:
-        raise ValidationError("Correction reason is mandatory to preserve audit trail.")
+    reason_str = validate_audit_reason_text(reason, field_name="Correction reason")
 
     try:
         new_qty_recv = Decimal(str(new_quantity_received))
